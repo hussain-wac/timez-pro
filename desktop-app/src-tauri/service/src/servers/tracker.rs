@@ -5,7 +5,7 @@ use timez_core::constants::{ACTIVE_THRESHOLD_SECS, POLL_INTERVAL_SECS};
 use timez_core::models::ActivityStats;
 use timez_core::protocol::{Request, ResponseData};
 
-use crate::idle_detection;
+use crate::idle_detection::IdleDetector;
 use crate::runtime;
 use crate::ServiceKind;
 
@@ -19,15 +19,31 @@ pub fn run(parent_pid: Option<u32>) -> Result<(), String> {
     let state = Arc::new(Mutex::new(TrackerState::default()));
     spawn_tracker(Arc::clone(&state));
 
-    runtime::run_server(
-        ServiceKind::Tracker.socket_path(),
-        parent_pid,
-        move |request| match request {
-            Request::GetActivityStats => Ok(ResponseData::Activity(get_stats(&state)?)),
-            Request::Shutdown => Ok(ResponseData::Unit),
-            _ => Err("Unsupported request for tracker service".to_string()),
-        },
-    )
+    #[cfg(unix)]
+    {
+        runtime::run_server(
+            ServiceKind::Tracker.socket_path(),
+            parent_pid,
+            move |request| match request {
+                Request::GetActivityStats => Ok(ResponseData::Activity(get_stats(&state)?)),
+                Request::Shutdown => Ok(ResponseData::Unit),
+                _ => Err("Unsupported request for tracker service".to_string()),
+            },
+        )
+    }
+
+    #[cfg(windows)]
+    {
+        runtime::run_server(
+            ServiceKind::Tracker.port(),
+            parent_pid,
+            move |request| match request {
+                Request::GetActivityStats => Ok(ResponseData::Activity(get_stats(&state)?)),
+                Request::Shutdown => Ok(ResponseData::Unit),
+                _ => Err("Unsupported request for tracker service".to_string()),
+            },
+        )
+    }
 }
 
 fn get_stats(state: &Arc<Mutex<TrackerState>>) -> Result<ActivityStats, String> {
@@ -49,10 +65,10 @@ fn get_stats(state: &Arc<Mutex<TrackerState>>) -> Result<ActivityStats, String> 
 
 fn spawn_tracker(state: Arc<Mutex<TrackerState>>) {
     std::thread::spawn(move || {
-        let conn = match idle_detection::connect_session_bus() {
-            Ok(conn) => conn,
+        let detector = match IdleDetector::new() {
+            Ok(d) => d,
             Err(err) => {
-                eprintln!("[tracker] D-Bus connect failed: {err}");
+                eprintln!("[tracker] Idle detector init failed: {err}");
                 return;
             }
         };
@@ -66,18 +82,11 @@ fn spawn_tracker(state: Arc<Mutex<TrackerState>>) {
         loop {
             std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
 
-            let is_locked = idle_detection::is_session_locked(&conn);
-            let idle_secs = match idle_detection::get_idle_duration_secs(&conn) {
-                Ok(secs) => secs,
-                Err(err) => {
-                    eprintln!("[tracker] Idle query failed: {err}");
-                    0
-                }
-            };
+            let is_locked = detector.is_locked();
+            let idle_secs = detector.get_idle_secs();
 
             let user_is_idle = idle_secs >= ACTIVE_THRESHOLD_SECS || is_locked;
 
-            // Use match with explicit poison handling
             let mut tracker = match state.lock() {
                 Ok(guard) => guard,
                 Err(poison_err) => {

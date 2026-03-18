@@ -14,11 +14,23 @@ pub fn run(parent_pid: Option<u32>) -> Result<(), String> {
     let timer_state = Arc::new(Mutex::new(TimerStateInner::new()));
     spawn_sync_thread(Arc::clone(&timer_state));
 
-    runtime::run_server(
-        ServiceKind::Task.socket_path(),
-        parent_pid,
-        move |request| handle_request(request, &timer_state),
-    )
+    #[cfg(unix)]
+    {
+        runtime::run_server(
+            ServiceKind::Task.socket_path(),
+            parent_pid,
+            move |request| handle_request(request, &timer_state),
+        )
+    }
+
+    #[cfg(windows)]
+    {
+        runtime::run_server(
+            ServiceKind::Task.port(),
+            parent_pid,
+            move |request| handle_request(request, &timer_state),
+        )
+    }
 }
 
 fn handle_request(
@@ -115,7 +127,7 @@ fn refresh_tasks(timer_state: &Arc<Mutex<TimerStateInner>>) -> Result<Vec<Task>,
 fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
     use timez_core::api;
 
-    const SYNC_INTERVAL_SECS: u64 = 30; // Sync every 30 seconds
+    const SYNC_INTERVAL_SECS: u64 = 30;
 
     std::thread::spawn(move || {
         // Initial sync
@@ -137,7 +149,6 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
                 println!("[sync] Midnight reset - stopping timer");
                 if let Ok(mut timer) = timer_state.lock() {
                     if let Some(task_id) = timer.running_task_id {
-                        // Get total elapsed using the new method
                         let total_elapsed = timer.get_total_elapsed(task_id);
                         if total_elapsed > 0 {
                             if let Some(started_at) = timer.timer_started_at {
@@ -160,15 +171,12 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
             println!("[sync] Syncing with API...");
 
             if let Ok(mut timer) = timer_state.lock() {
-                // Get running task info
                 if let (Some(task_id), Some(started_at)) =
                     (timer.running_task_id, timer.timer_started_at)
                 {
-                    // Calculate TOTAL elapsed (base + live) - this is cumulative
                     let total_elapsed = timer.get_total_elapsed(task_id);
                     let client_started = started_at.to_rfc3339();
 
-                    // Only sync if we have new time to sync
                     let last_synced = timer.last_synced_elapsed.get(&task_id).copied().unwrap_or(0);
                     let new_time = total_elapsed - last_synced;
 
@@ -180,7 +188,6 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
                     if total_elapsed > 0 && new_time > 0 {
                         println!("[sync] Syncing {} to server...", format_duration(new_time));
 
-                        // Send TOTAL elapsed (cumulative) to backend
                         match api::sync_time(task_id, total_elapsed, &client_started, None, &token) {
                             Ok(response) => {
                                 println!(
@@ -191,8 +198,6 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
                                     "[sync] Synced {} total ({} new) for task {}",
                                     total_elapsed, new_time, task_id
                                 );
-
-                                // Mark as synced - this resets timer_started_at
                                 timer.mark_synced(task_id, total_elapsed);
                                 println!("[sync] {} synced successfully", format_duration(new_time));
                             }

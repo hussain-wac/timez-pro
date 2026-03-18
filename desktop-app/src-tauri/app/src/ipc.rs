@@ -1,5 +1,8 @@
+//! Cross-platform IPC for communicating with background services.
+//!
+//! Uses Unix domain sockets on Linux/macOS and named pipes on Windows.
+
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -11,6 +14,26 @@ use timez_core::protocol::{Request, RequestEnvelope, ResponseData, ResponseEnvel
 
 const REQUEST_TOKEN: &str = "timez-local";
 
+// ============================================================================
+// Cross-platform stream abstraction
+// ============================================================================
+
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+
+#[cfg(windows)]
+use std::net::TcpStream;
+
+#[cfg(unix)]
+type IpcStream = UnixStream;
+
+#[cfg(windows)]
+type IpcStream = TcpStream;
+
+// ============================================================================
+// Service definitions
+// ============================================================================
+
 #[derive(Clone, Copy)]
 enum ServiceKind {
     Auth,
@@ -21,6 +44,7 @@ enum ServiceKind {
 }
 
 impl ServiceKind {
+    #[cfg(unix)]
     fn socket_path(self) -> PathBuf {
         PathBuf::from(match self {
             Self::Auth => "/tmp/timez-auth-service.sock",
@@ -29,6 +53,17 @@ impl ServiceKind {
             Self::IdleTime => "/tmp/timez-idle-time-service.sock",
             Self::Quit => "/tmp/timez-quit-service.sock",
         })
+    }
+
+    #[cfg(windows)]
+    fn port(self) -> u16 {
+        match self {
+            Self::Auth => 23401,
+            Self::Task => 23402,
+            Self::Tracker => 23403,
+            Self::IdleTime => 23404,
+            Self::Quit => 23405,
+        }
     }
 
     fn binary_name(self) -> &'static str {
@@ -40,7 +75,38 @@ impl ServiceKind {
             Self::Quit => "timez-quit-service",
         }
     }
+
+    #[cfg(windows)]
+    fn binary_name_exe(self) -> &'static str {
+        match self {
+            Self::Auth => "timez-auth-service.exe",
+            Self::Task => "timez-task-service.exe",
+            Self::Tracker => "timez-tracker-service.exe",
+            Self::IdleTime => "timez-idle-time-service.exe",
+            Self::Quit => "timez-quit-service.exe",
+        }
+    }
 }
+
+// ============================================================================
+// Connection functions
+// ============================================================================
+
+#[cfg(unix)]
+fn try_connect(kind: ServiceKind) -> Result<IpcStream, String> {
+    UnixStream::connect(kind.socket_path()).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn try_connect(kind: ServiceKind) -> Result<IpcStream, String> {
+    let addr = format!("127.0.0.1:{}", kind.port());
+    TcpStream::connect(&addr).map_err(|e| e.to_string())
+}
+
+
+// ============================================================================
+// Service Manager
+// ============================================================================
 
 struct ManagedService {
     kind: ServiceKind,
@@ -70,7 +136,7 @@ impl ServiceManager {
             ServiceKind::Quit,
         ];
 
-        let mut services = self.services.lock().map_err(|err| err.to_string())?;
+        let mut services = self.services.lock().map_err(|e| e.to_string())?;
         services.clear();
 
         for kind in service_kinds {
@@ -92,7 +158,7 @@ impl ServiceManager {
 
             for service in services.iter_mut() {
                 if let Some(child) = service.child.as_mut() {
-                    if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
+                    if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
                         return Err(format!(
                             "{} exited during startup with status {status}",
                             service.kind.binary_name()
@@ -122,18 +188,16 @@ impl ServiceManager {
             token: REQUEST_TOKEN.to_string(),
             request,
         };
-        let payload = serde_json::to_string(&envelope).map_err(|err| err.to_string())?;
-        stream
-            .write_all(payload.as_bytes())
-            .map_err(|err| err.to_string())?;
-        stream.write_all(b"\n").map_err(|err| err.to_string())?;
-        stream.flush().map_err(|err| err.to_string())?;
+        let payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
+        stream.write_all(payload.as_bytes()).map_err(|e: std::io::Error| e.to_string())?;
+        stream.write_all(b"\n").map_err(|e: std::io::Error| e.to_string())?;
+        stream.flush().map_err(|e: std::io::Error| e.to_string())?;
 
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(|err| err.to_string())?;
+        reader.read_line(&mut line).map_err(|e: std::io::Error| e.to_string())?;
         let response: ResponseEnvelope =
-            serde_json::from_str(&line).map_err(|err| format!("Invalid response: {err}"))?;
+            serde_json::from_str(&line).map_err(|e| format!("Invalid response: {e}"))?;
 
         if !response.ok {
             return Err(response
@@ -187,9 +251,9 @@ fn spawn_service_process<R: tauri::Runtime>(
             .stderr(Stdio::inherit())
             .current_dir(manifest_dir)
             .spawn()
-            .map_err(|err| {
+            .map_err(|e| {
                 format!(
-                    "Failed to start {} through cargo: {err}",
+                    "Failed to start {} through cargo: {e}",
                     kind.binary_name()
                 )
             });
@@ -203,7 +267,7 @@ fn spawn_service_process<R: tauri::Runtime>(
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|err| format!("Failed to start {}: {err}", kind.binary_name()));
+            .map_err(|e| format!("Failed to start {}: {e}", kind.binary_name()));
     }
 
     Err(format!(
@@ -216,9 +280,13 @@ fn resolve_service_binary<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     kind: ServiceKind,
 ) -> Result<PathBuf, String> {
-    let current_exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     if let Some(parent) = current_exe.parent() {
+        #[cfg(unix)]
         let candidate = parent.join(kind.binary_name());
+        #[cfg(windows)]
+        let candidate = parent.join(kind.binary_name_exe());
+
         if candidate.exists() {
             return Ok(candidate);
         }
@@ -227,8 +295,13 @@ fn resolve_service_binary<R: tauri::Runtime>(
     let resource_dir = app_handle
         .path()
         .resource_dir()
-        .map_err(|err| err.to_string())?;
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(unix)]
     let bundled = resource_dir.join(kind.binary_name());
+    #[cfg(windows)]
+    let bundled = resource_dir.join(kind.binary_name_exe());
+
     if bundled.exists() {
         return Ok(bundled);
     }
@@ -239,22 +312,16 @@ fn resolve_service_binary<R: tauri::Runtime>(
     ))
 }
 
-fn try_connect(kind: ServiceKind) -> Result<UnixStream, String> {
-    UnixStream::connect(kind.socket_path()).map_err(|err| err.to_string())
-}
-
 fn send_shutdown(kind: ServiceKind) -> Result<(), String> {
     let mut stream = try_connect(kind)?;
     let envelope = RequestEnvelope {
         token: REQUEST_TOKEN.to_string(),
         request: Request::Shutdown,
     };
-    let payload = serde_json::to_string(&envelope).map_err(|err| err.to_string())?;
-    stream
-        .write_all(payload.as_bytes())
-        .map_err(|err| err.to_string())?;
-    stream.write_all(b"\n").map_err(|err| err.to_string())?;
-    stream.flush().map_err(|err| err.to_string())
+    let payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
+    stream.write_all(payload.as_bytes()).map_err(|e: std::io::Error| e.to_string())?;
+    stream.write_all(b"\n").map_err(|e: std::io::Error| e.to_string())?;
+    stream.flush().map_err(|e: std::io::Error| e.to_string())
 }
 
 fn route_request(request: &Request) -> ServiceKind {
@@ -275,6 +342,10 @@ fn route_request(request: &Request) -> ServiceKind {
         Request::Shutdown => ServiceKind::Quit,
     }
 }
+
+// ============================================================================
+// Response decoders
+// ============================================================================
 
 pub fn decode_tasks(data: ResponseData) -> Result<Vec<Task>, String> {
     match data {
@@ -325,27 +396,29 @@ pub fn decode_unit(data: ResponseData) -> Result<(), String> {
     }
 }
 
+// ============================================================================
+// Direct auth login (for deep link handler)
+// ============================================================================
+
 pub fn send_auth_login(google_id_token: &str) -> Result<AuthResponse, String> {
-    let socket_path = PathBuf::from("/tmp/timez-auth-service.sock");
-    let mut stream = UnixStream::connect(&socket_path).map_err(|err| err.to_string())?;
+    let mut stream = try_connect(ServiceKind::Auth)?;
+
     let envelope = RequestEnvelope {
         token: REQUEST_TOKEN.to_string(),
         request: Request::GoogleLogin {
             google_id_token: google_id_token.to_string(),
         },
     };
-    let payload = serde_json::to_string(&envelope).map_err(|err| err.to_string())?;
-    stream
-        .write_all(payload.as_bytes())
-        .map_err(|err| err.to_string())?;
-    stream.write_all(b"\n").map_err(|err| err.to_string())?;
-    stream.flush().map_err(|err| err.to_string())?;
+    let payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
+    stream.write_all(payload.as_bytes()).map_err(|e: std::io::Error| e.to_string())?;
+    stream.write_all(b"\n").map_err(|e: std::io::Error| e.to_string())?;
+    stream.flush().map_err(|e: std::io::Error| e.to_string())?;
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line).map_err(|err| err.to_string())?;
+    reader.read_line(&mut line).map_err(|e: std::io::Error| e.to_string())?;
     let response: ResponseEnvelope =
-        serde_json::from_str(&line).map_err(|err| format!("Invalid response: {err}"))?;
+        serde_json::from_str(&line).map_err(|e| format!("Invalid response: {e}"))?;
 
     if !response.ok {
         return Err(response

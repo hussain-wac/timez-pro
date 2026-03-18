@@ -6,9 +6,19 @@ use crate::runtime;
 use crate::ServiceKind;
 
 pub fn run(parent_pid: Option<u32>) -> Result<(), String> {
-    runtime::run_server(ServiceKind::Auth.socket_path(), parent_pid, move |request| {
-        handle_request(request)
-    })
+    #[cfg(unix)]
+    {
+        runtime::run_server(ServiceKind::Auth.socket_path(), parent_pid, move |request| {
+            handle_request(request)
+        })
+    }
+
+    #[cfg(windows)]
+    {
+        runtime::run_server(ServiceKind::Auth.port(), parent_pid, move |request| {
+            handle_request(request)
+        })
+    }
 }
 
 fn handle_request(request: Request) -> Result<ResponseData, String> {
@@ -44,5 +54,13 @@ fn handle_request(request: Request) -> Result<ResponseData, String> {
 }
 
 fn notify_task_refresh() {
-    let _ = runtime::send_request(&ServiceKind::Task.socket_path(), Request::RefreshTasks);
+    #[cfg(unix)]
+    {
+        let _ = runtime::send_request(&ServiceKind::Task.socket_path(), Request::RefreshTasks);
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = runtime::send_request(ServiceKind::Task.port(), Request::RefreshTasks);
+    }
 }

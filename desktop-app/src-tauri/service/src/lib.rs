@@ -3,6 +3,7 @@ pub mod idle_detection;
 pub mod runtime;
 pub mod servers;
 
+#[cfg(unix)]
 use std::path::PathBuf;
 
 pub const REQUEST_TOKEN: &str = "timez-local";
@@ -17,6 +18,7 @@ pub enum ServiceKind {
 }
 
 impl ServiceKind {
+    #[cfg(unix)]
     pub fn socket_path(self) -> PathBuf {
         PathBuf::from(match self {
             ServiceKind::Auth => "/tmp/timez-auth-service.sock",
@@ -25,6 +27,17 @@ impl ServiceKind {
             ServiceKind::IdleTime => "/tmp/timez-idle-time-service.sock",
             ServiceKind::Quit => "/tmp/timez-quit-service.sock",
         })
+    }
+
+    #[cfg(windows)]
+    pub fn port(self) -> u16 {
+        match self {
+            ServiceKind::Auth => 23401,
+            ServiceKind::Task => 23402,
+            ServiceKind::Tracker => 23403,
+            ServiceKind::IdleTime => 23404,
+            ServiceKind::Quit => 23405,
+        }
     }
 
     pub fn binary_name(self) -> &'static str {

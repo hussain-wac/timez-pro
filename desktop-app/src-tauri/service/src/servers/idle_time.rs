@@ -14,23 +14,47 @@ pub fn run(parent_pid: Option<u32>) -> Result<(), String> {
     let pending_idle_event = Arc::new(Mutex::new(None));
     spawn_idle_monitor(Arc::clone(&pending_idle_event));
 
-    runtime::run_server(
-        ServiceKind::IdleTime.socket_path(),
-        parent_pid,
-        move |request| match request {
-            Request::GetIdleEvent => {
-                let pending = pending_idle_event.lock().map_err(|err| err.to_string())?;
-                Ok(ResponseData::IdleEvent(pending.clone()))
-            }
-            Request::ResolveIdleEvent => {
-                let mut pending = pending_idle_event.lock().map_err(|err| err.to_string())?;
-                *pending = None;
-                Ok(ResponseData::Unit)
-            }
-            Request::Shutdown => Ok(ResponseData::Unit),
-            _ => Err("Unsupported request for idle-time service".to_string()),
-        },
-    )
+    #[cfg(unix)]
+    {
+        runtime::run_server(
+            ServiceKind::IdleTime.socket_path(),
+            parent_pid,
+            move |request| match request {
+                Request::GetIdleEvent => {
+                    let pending = pending_idle_event.lock().map_err(|err| err.to_string())?;
+                    Ok(ResponseData::IdleEvent(pending.clone()))
+                }
+                Request::ResolveIdleEvent => {
+                    let mut pending = pending_idle_event.lock().map_err(|err| err.to_string())?;
+                    *pending = None;
+                    Ok(ResponseData::Unit)
+                }
+                Request::Shutdown => Ok(ResponseData::Unit),
+                _ => Err("Unsupported request for idle-time service".to_string()),
+            },
+        )
+    }
+
+    #[cfg(windows)]
+    {
+        runtime::run_server(
+            ServiceKind::IdleTime.port(),
+            parent_pid,
+            move |request| match request {
+                Request::GetIdleEvent => {
+                    let pending = pending_idle_event.lock().map_err(|err| err.to_string())?;
+                    Ok(ResponseData::IdleEvent(pending.clone()))
+                }
+                Request::ResolveIdleEvent => {
+                    let mut pending = pending_idle_event.lock().map_err(|err| err.to_string())?;
+                    *pending = None;
+                    Ok(ResponseData::Unit)
+                }
+                Request::Shutdown => Ok(ResponseData::Unit),
+                _ => Err("Unsupported request for idle-time service".to_string()),
+            },
+        )
+    }
 }
 
 fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
@@ -58,10 +82,7 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
         loop {
             std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
 
-            // Check if session is locked
             let is_locked = detector.is_locked();
-
-            // Get idle duration (returns 0 if detection fails)
             let system_idle_secs = detector.get_idle_secs();
 
             let user_is_active = system_idle_secs < ACTIVE_THRESHOLD_SECS && !is_locked;
@@ -111,10 +132,9 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
                     );
 
                     // Stop the timer
-                    let _ = runtime::send_request(&ServiceKind::Task.socket_path(), Request::StopTimer);
+                    send_stop_timer();
 
                     paused_task = Some(task);
-                    // Backdate idle start time
                     idle_started_at =
                         Some(Utc::now() - chrono::Duration::seconds(system_idle_secs as i64));
                     is_idle = true;
@@ -151,10 +171,35 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
 }
 
 fn current_running_task() -> Option<Task> {
-    let response =
-        runtime::send_request(&ServiceKind::Task.socket_path(), Request::ListTasks).ok()?;
-    match response {
-        ResponseData::Tasks(tasks) => tasks.into_iter().find(|task| task.running),
-        _ => None,
+    #[cfg(unix)]
+    {
+        let response =
+            runtime::send_request(&ServiceKind::Task.socket_path(), Request::ListTasks).ok()?;
+        match response {
+            ResponseData::Tasks(tasks) => tasks.into_iter().find(|task| task.running),
+            _ => None,
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let response =
+            runtime::send_request(ServiceKind::Task.port(), Request::ListTasks).ok()?;
+        match response {
+            ResponseData::Tasks(tasks) => tasks.into_iter().find(|task| task.running),
+            _ => None,
+        }
+    }
+}
+
+fn send_stop_timer() {
+    #[cfg(unix)]
+    {
+        let _ = runtime::send_request(&ServiceKind::Task.socket_path(), Request::StopTimer);
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = runtime::send_request(ServiceKind::Task.port(), Request::StopTimer);
     }
 }
