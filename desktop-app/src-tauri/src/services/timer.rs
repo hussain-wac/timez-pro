@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::process::Command;
 
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager};
@@ -12,34 +11,12 @@ use crate::services::storage::LocalTimeStorage;
 
 const SYNC_INTERVAL_SECS: u64 = 30; // Sync every 30 seconds
 
-/// Send a desktop notification using notify-send (works reliably on GNOME 46+/Ubuntu 24.04)
-fn send_notification(_app_handle: &AppHandle, title: &str, body: &str) {
-    #[cfg(target_os = "linux")]
-    {
-        if let Err(e) = Command::new("notify-send")
-            .arg("--app-name=Timez Pro")
-            .arg("--urgency=normal")
-            .arg(title)
-            .arg(body)
-            .spawn()
-        {
-            eprintln!("[notification] Failed to send via notify-send: {}", e);
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        use tauri_plugin_notification::NotificationExt;
-        if let Err(e) = _app_handle
-            .notification()
-            .builder()
-            .title(title)
-            .body(body)
-            .show()
-        {
-            eprintln!("[notification] Failed to send: {}", e);
-        }
-    }
+/// Emit a notification event for the frontend to display
+fn emit_notification(app_handle: &AppHandle, title: &str, body: &str) {
+    let _ = app_handle.emit("show-notification", serde_json::json!({
+        "title": title,
+        "body": body
+    }));
 }
 
 pub struct TimerStateInner {
@@ -260,7 +237,7 @@ pub fn spawn_sync_thread(app_handle: AppHandle, timer_state: TimerState) {
 
                     if current_elapsed > 0 && new_time_to_sync > 0 {
                         // Send desktop notification BEFORE syncing
-                        send_notification(
+                        emit_notification(
                             &app_handle,
                             "Timez Pro - Syncing",
                             &format!("Syncing {} to server...", format_duration(new_time_to_sync))
@@ -277,7 +254,7 @@ pub fn spawn_sync_thread(app_handle: AppHandle, timer_state: TimerState) {
                         match result {
                             Err(e) => {
                                 eprintln!("[sync] Error syncing task {}: {}", task_id, e);
-                                send_notification(
+                                emit_notification(
                                     &app_handle,
                                     "Timez Pro - Sync Failed",
                                     &format!("Failed to sync: {}", e)
@@ -298,7 +275,7 @@ pub fn spawn_sync_thread(app_handle: AppHandle, timer_state: TimerState) {
                                 local_store.mark_synced(task_id, current_elapsed);
 
                                 // Send success notification
-                                send_notification(
+                                emit_notification(
                                     &app_handle,
                                     "Timez Pro - Synced",
                                     &format!("{} synced successfully", format_duration(new_time_to_sync))

@@ -4233,7 +4233,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dbus",
- "notify-rust",
  "open",
  "serde",
  "serde_json",
@@ -4244,6 +4243,8 @@ dependencies = [
 name = "timez-pro"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "dbus",
  "serde",
  "serde_json",
  "single-instance",
@@ -4261,10 +4262,10 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dbus",
- "notify-rust",
  "serde",
  "serde_json",
  "timez-core",
+ "winapi",
 ]
 
 [[package]]

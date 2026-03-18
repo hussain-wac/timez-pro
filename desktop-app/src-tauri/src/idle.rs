@@ -1,8 +1,14 @@
+//! Cross-platform idle detection for Tauri app.
+//!
+//! Monitors user activity and automatically pauses/resumes tracking:
+//! - Linux: D-Bus (Mutter IdleMonitor, freedesktop.ScreenSaver)
+//! - macOS: ioreg command for HIDIdleTime
+//! - Windows: Win32 GetLastInputInfo API
+
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use chrono::Utc;
-use dbus::blocking::Connection;
 use tauri::{Emitter, Manager};
 
 use crate::api::AuthToken;
@@ -44,49 +50,223 @@ impl ActivityTracker {
 
 pub type ActivityState = StdMutex<ActivityTracker>;
 
-fn is_session_locked(conn: &Connection) -> bool {
-    check_gnome_screensaver_active(conn)
-        .or_else(|| check_freedesktop_screensaver_active(conn))
-        .or_else(|| check_logind_locked(conn))
-        .unwrap_or(false)
+// ============================================================================
+// Platform-specific idle detection
+// ============================================================================
+
+#[cfg(target_os = "linux")]
+mod platform {
+    use dbus::blocking::Connection;
+    use std::time::Duration;
+
+    pub struct IdleDetector {
+        conn: Connection,
+    }
+
+    impl IdleDetector {
+        pub fn new() -> Result<Self, String> {
+            let conn = Connection::new_session()
+                .map_err(|e| format!("D-Bus connection failed: {}", e))?;
+            Ok(Self { conn })
+        }
+
+        pub fn get_idle_secs(&self) -> u64 {
+            // Try Mutter first (GNOME), then fallback
+            self.query_mutter_idle()
+                .or_else(|| self.query_freedesktop_idle())
+                .unwrap_or(0)
+        }
+
+        pub fn is_locked(&self) -> bool {
+            self.check_gnome_screensaver()
+                .or_else(|| self.check_freedesktop_screensaver())
+                .or_else(|| self.check_logind_locked())
+                .unwrap_or(false)
+        }
+
+        fn query_mutter_idle(&self) -> Option<u64> {
+            let proxy = self.conn.with_proxy(
+                "org.gnome.Mutter.IdleMonitor",
+                "/org/gnome/Mutter/IdleMonitor/Core",
+                Duration::from_millis(500),
+            );
+            let result: Result<(u64,), _> = proxy.method_call(
+                "org.gnome.Mutter.IdleMonitor",
+                "GetIdletime",
+                (),
+            );
+            result.ok().map(|(ms,)| ms / 1000)
+        }
+
+        fn query_freedesktop_idle(&self) -> Option<u64> {
+            let proxy = self.conn.with_proxy(
+                "org.freedesktop.ScreenSaver",
+                "/org/freedesktop/ScreenSaver",
+                Duration::from_millis(500),
+            );
+            let result: Result<(u32,), _> = proxy.method_call(
+                "org.freedesktop.ScreenSaver",
+                "GetSessionIdleTime",
+                (),
+            );
+            result.ok().map(|(ms,)| (ms / 1000) as u64)
+        }
+
+        fn check_gnome_screensaver(&self) -> Option<bool> {
+            let proxy = self.conn.with_proxy(
+                "org.gnome.ScreenSaver",
+                "/org/gnome/ScreenSaver",
+                Duration::from_millis(200),
+            );
+            proxy
+                .method_call("org.gnome.ScreenSaver", "GetActive", ())
+                .map(|r: (bool,)| r.0)
+                .ok()
+        }
+
+        fn check_freedesktop_screensaver(&self) -> Option<bool> {
+            let proxy = self.conn.with_proxy(
+                "org.freedesktop.ScreenSaver",
+                "/org/freedesktop/ScreenSaver",
+                Duration::from_millis(200),
+            );
+            proxy
+                .method_call("org.freedesktop.ScreenSaver", "GetActive", ())
+                .map(|r: (bool,)| r.0)
+                .ok()
+        }
+
+        fn check_logind_locked(&self) -> Option<bool> {
+            let proxy = self.conn.with_proxy(
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1/session/auto",
+                Duration::from_millis(200),
+            );
+            use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
+            proxy
+                .get::<bool>("org.freedesktop.login1.Session", "LockedHint")
+                .ok()
+        }
+    }
 }
 
-fn check_gnome_screensaver_active(conn: &Connection) -> Option<bool> {
-    let proxy = conn.with_proxy(
-        "org.gnome.ScreenSaver",
-        "/org/gnome/ScreenSaver",
-        Duration::from_millis(200),
-    );
-    proxy
-        .method_call("org.gnome.ScreenSaver", "GetActive", ())
-        .map(|r: (bool,)| r.0)
-        .ok()
+#[cfg(target_os = "macos")]
+mod platform {
+    use std::process::Command;
+
+    pub struct IdleDetector;
+
+    impl IdleDetector {
+        pub fn new() -> Result<Self, String> {
+            Ok(Self)
+        }
+
+        pub fn get_idle_secs(&self) -> u64 {
+            // Use ioreg to get HIDIdleTime (nanoseconds)
+            let output = match Command::new("ioreg")
+                .args(["-c", "IOHIDSystem", "-d", "4"])
+                .output()
+            {
+                Ok(o) => o,
+                Err(_) => return 0,
+            };
+
+            if !output.status.success() {
+                return 0;
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("HIDIdleTime") {
+                    if let Some(value) = line.split('=').nth(1) {
+                        if let Ok(nanos) = value.trim().parse::<u64>() {
+                            return nanos / 1_000_000_000;
+                        }
+                    }
+                }
+            }
+            0
+        }
+
+        pub fn is_locked(&self) -> bool {
+            // Check if screensaver is running
+            let output = Command::new("pgrep")
+                .args(["-x", "ScreenSaverEngine"])
+                .output();
+            matches!(output, Ok(o) if o.status.success())
+        }
+    }
 }
 
-fn check_freedesktop_screensaver_active(conn: &Connection) -> Option<bool> {
-    let proxy = conn.with_proxy(
-        "org.freedesktop.ScreenSaver",
-        "/org/freedesktop/ScreenSaver",
-        Duration::from_millis(200),
-    );
-    proxy
-        .method_call("org.freedesktop.ScreenSaver", "GetActive", ())
-        .map(|r: (bool,)| r.0)
-        .ok()
+#[cfg(target_os = "windows")]
+mod platform {
+    use std::mem::size_of;
+
+    #[repr(C)]
+    struct LASTINPUTINFO {
+        cb_size: u32,
+        dw_time: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetLastInputInfo(plii: *mut LASTINPUTINFO) -> i32;
+        fn GetTickCount() -> u32;
+        fn GetForegroundWindow() -> isize;
+    }
+
+    pub struct IdleDetector;
+
+    impl IdleDetector {
+        pub fn new() -> Result<Self, String> {
+            Ok(Self)
+        }
+
+        pub fn get_idle_secs(&self) -> u64 {
+            unsafe {
+                let mut lii = LASTINPUTINFO {
+                    cb_size: size_of::<LASTINPUTINFO>() as u32,
+                    dw_time: 0,
+                };
+
+                if GetLastInputInfo(&mut lii) != 0 {
+                    let idle_ms = GetTickCount().wrapping_sub(lii.dw_time);
+                    (idle_ms / 1000) as u64
+                } else {
+                    0
+                }
+            }
+        }
+
+        pub fn is_locked(&self) -> bool {
+            unsafe {
+                // Heuristic: no foreground window may indicate locked
+                GetForegroundWindow() == 0
+            }
+        }
+    }
 }
 
-fn check_logind_locked(conn: &Connection) -> Option<bool> {
-    let proxy = conn.with_proxy(
-        "org.freedesktop.login1",
-        "/org/freedesktop/login1/session/auto",
-        Duration::from_millis(200),
-    );
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+mod platform {
+    pub struct IdleDetector;
 
-    use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
-    proxy
-        .get::<bool>("org.freedesktop.login1.Session", "LockedHint")
-        .ok()
+    impl IdleDetector {
+        pub fn new() -> Result<Self, String> {
+            Err("Idle detection not supported on this platform".to_string())
+        }
+
+        pub fn get_idle_secs(&self) -> u64 {
+            0
+        }
+
+        pub fn is_locked(&self) -> bool {
+            false
+        }
+    }
 }
+
+use platform::IdleDetector;
 
 /// Helper to read the current auth token
 fn get_token(app_handle: &tauri::AppHandle) -> Option<String> {
@@ -95,7 +275,6 @@ fn get_token(app_handle: &tauri::AppHandle) -> Option<String> {
         Ok(s) => s.access_token.clone(),
         Err(e) => {
             eprintln!("[idle] Failed to get auth token (poisoned): {}", e);
-            // Try to recover from poisoned mutex
             auth.clear_poison();
             auth.inner().lock().ok().and_then(|s| s.access_token.clone())
         }
@@ -116,6 +295,7 @@ fn lock_timer_state<'a>(
     }
 }
 
+/// Spawns the idle monitor thread with cross-platform support.
 pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64) {
     std::thread::spawn(move || {
         eprintln!(
@@ -123,14 +303,13 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
             idle_threshold_secs
         );
 
-        // Reuse a single D-Bus connection for the lifetime of this thread
-        let conn = match Connection::new_session() {
-            Ok(c) => {
-                eprintln!("[idle] D-Bus session connected");
-                c
+        let detector = match IdleDetector::new() {
+            Ok(d) => {
+                eprintln!("[idle] Idle detector initialized");
+                d
             }
             Err(e) => {
-                eprintln!("[idle] FATAL: Cannot connect to D-Bus: {}", e);
+                eprintln!("[idle] Failed to initialize idle detector: {}", e);
                 return;
             }
         };
@@ -145,26 +324,8 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
         loop {
             std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
 
-            let is_locked = is_session_locked(&conn);
-
-            // Get system-wide idle time via D-Bus (Mutter IdleMonitor)
-            // If D-Bus fails (system might be sleeping), treat as idle
-            let proxy = conn.with_proxy(
-                "org.gnome.Mutter.IdleMonitor",
-                "/org/gnome/Mutter/IdleMonitor/Core",
-                Duration::from_millis(500),
-            );
-            let idle_ms: u64 =
-                match proxy.method_call("org.gnome.Mutter.IdleMonitor", "GetIdletime", ()) {
-                    Ok((ms,)) => ms,
-                    Err(e) => {
-                        eprintln!("[idle] D-Bus failed (system may be sleeping): {}", e);
-                        // Treat D-Bus failure as idle (system might be sleeping/suspended)
-                        (idle_threshold_secs * 1000) + 1
-                    }
-                };
-
-            let system_idle_secs = idle_ms / 1000;
+            let is_locked = detector.is_locked();
+            let system_idle_secs = detector.get_idle_secs();
             let user_is_active = system_idle_secs < POLL_INTERVAL_SECS + 1 && !is_locked;
 
             if is_locked && !was_locked {
@@ -179,12 +340,12 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
             log_counter += 1;
             if log_counter % 10 == 0 {
                 eprintln!(
-                    "[idle] status: idle_ms={}, is_idle={}, paused_task={:?}",
-                    idle_ms, is_idle, paused_task_id
+                    "[idle] status: idle_secs={}, is_idle={}, paused_task={:?}",
+                    system_idle_secs, is_idle, paused_task_id
                 );
             }
 
-            // Update activity tracker (short lock, no I/O)
+            // Update activity tracker
             {
                 let state = app_handle.state::<ActivityState>();
                 if let Ok(mut t) = state.inner().lock() {
@@ -198,16 +359,13 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
                     }
                     app_handle.emit("activity-update", t.stats()).ok();
                 } else {
-                    // Try to recover from poisoned mutex
                     state.clear_poison();
                 }
             }
 
             if user_is_active {
                 if is_idle {
-                    // ============================================
                     // USER RETURNED FROM IDLE — show popup
-                    // ============================================
                     let idle_secs = idle_started_at
                         .map(|start| (Utc::now() - start).num_seconds())
                         .unwrap_or(0);
@@ -244,9 +402,7 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
             } else {
                 // User is idle
                 if !is_idle && (system_idle_secs >= idle_threshold_secs || is_locked) {
-                    // ============================================
                     // IDLE DETECTED — stop running timer
-                    // ============================================
                     eprintln!(
                         "[idle] *** IDLE THRESHOLD REACHED ({}s idle, locked={}) ***",
                         system_idle_secs, is_locked
@@ -256,7 +412,7 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
                         Some(Utc::now() - chrono::Duration::seconds(system_idle_secs as i64));
                     is_idle = true;
 
-                    // Read timer state (short lock, no I/O)
+                    // Read timer state
                     let task_info = {
                         let timer_state = app_handle.state::<TimerState>();
                         lock_timer_state(&timer_state).and_then(|s| {
@@ -278,7 +434,6 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
                         let token = get_token(&app_handle);
                         let local_store = app_handle.state::<crate::local_store::LocalTimeStorage>();
 
-                        // Stop the timer (lock is released before API call inside stop_current)
                         let timer_state = app_handle.state::<TimerState>();
                         if let Some(mut s) = lock_timer_state(&timer_state) {
                             match s.stop_current(&token, &local_store) {

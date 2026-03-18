@@ -54,7 +54,6 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
         let mut idle_started_at: Option<chrono::DateTime<Utc>> = None;
         let mut paused_task: Option<Task> = None;
         let mut was_locked = false;
-        let mut last_successful_check = std::time::Instant::now();
 
         loop {
             std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
@@ -62,23 +61,8 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
             // Check if session is locked
             let is_locked = detector.is_locked();
 
-            // Get idle duration
-            let system_idle_secs = match detector.get_idle_secs() {
-                Ok(secs) => {
-                    last_successful_check = std::time::Instant::now();
-                    secs
-                }
-                Err(err) => {
-                    // If we can't get idle time, system might be sleeping/suspended
-                    let time_since_last_check = last_successful_check.elapsed().as_secs();
-                    eprintln!(
-                        "[idle-time] Idle query failed (may be sleeping): {err}, last check was {}s ago",
-                        time_since_last_check
-                    );
-                    // Use time since last successful check as idle time
-                    time_since_last_check.max(DEFAULT_IDLE_THRESHOLD_SECS)
-                }
-            };
+            // Get idle duration (returns 0 if detection fails)
+            let system_idle_secs = detector.get_idle_secs();
 
             let user_is_active = system_idle_secs < ACTIVE_THRESHOLD_SECS && !is_locked;
 

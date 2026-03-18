@@ -3,11 +3,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
-use std::process::Command;
-
 use chrono::Utc;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::api;
 use crate::api::AuthToken;
@@ -23,37 +20,12 @@ const QUIT_SYNC_RETRIES: u32 = 3;
 /// Delay between retry attempts (milliseconds).
 const QUIT_RETRY_DELAY_MS: u64 = 300;
 
-/// Send a desktop notification.
-///
-/// On Linux, uses `notify-send` for reliable delivery on GNOME 46+.
-/// On other platforms, uses Tauri's notification plugin.
-fn send_notification(_app_handle: &AppHandle, title: &str, body: &str) {
-    #[cfg(target_os = "linux")]
-    {
-        if let Err(e) = Command::new("notify-send")
-            .arg("--app-name=Timez Pro")
-            .arg("--urgency=normal")
-            .arg(title)
-            .arg(body)
-            .spawn()
-        {
-            eprintln!("[notification] Failed to send via notify-send: {}", e);
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        use tauri_plugin_notification::NotificationExt;
-        if let Err(e) = _app_handle
-            .notification()
-            .builder()
-            .title(title)
-            .body(body)
-            .show()
-        {
-            eprintln!("[notification] Failed to send: {}", e);
-        }
-    }
+/// Emit a notification event for the frontend to display
+fn emit_notification(app_handle: &AppHandle, title: &str, body: &str) {
+    let _ = app_handle.emit("show-notification", serde_json::json!({
+        "title": title,
+        "body": body
+    }));
 }
 
 // Use the shared format_duration from the crate root or define inline
@@ -167,7 +139,7 @@ pub fn quit_app(app_handle: AppHandle) -> Result<(), String> {
     }
 
     // Show notification
-    send_notification(
+    emit_notification(
         &app_handle,
         "Timez Pro - Saving",
         &format!("Saving {} pending entries...", total_sync_count)
@@ -267,13 +239,13 @@ pub fn quit_app(app_handle: AppHandle) -> Result<(), String> {
 
         // Send final notification
         if failed_count == 0 {
-            send_notification(
+            emit_notification(
                 &app_handle_clone,
                 "Timez Pro - Saved",
                 &format!("All {} entries saved successfully!", synced_count)
             );
         } else {
-            send_notification(
+            emit_notification(
                 &app_handle_clone,
                 "Timez Pro - Warning",
                 &format!("{} saved, {} failed", synced_count, failed_count)

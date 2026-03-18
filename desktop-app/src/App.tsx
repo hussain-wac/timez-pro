@@ -191,6 +191,11 @@ function App() {
       setTimeout(() => setSyncNotification(null), 5000);
     });
 
+    // Listen for notifications from Rust backend
+    const unlistenShowNotification = listen<{ title: string; body: string }>("show-notification", (event) => {
+      showDesktopNotification(event.payload.title, event.payload.body);
+    });
+
     return () => {
       unlisten1.then((fn) => fn());
       unlisten2.then((fn) => fn());
@@ -201,6 +206,7 @@ function App() {
       unlistenSyncComplete.then((fn) => fn());
       unlistenSyncError.then((fn) => fn());
       unlistenMidnight.then((fn) => fn());
+      unlistenShowNotification.then((fn) => fn());
     };
   }, [refreshTasks]);
 

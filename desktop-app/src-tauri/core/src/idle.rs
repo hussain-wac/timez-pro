@@ -1,8 +1,14 @@
+//! Cross-platform idle detection for service mode.
+//!
+//! Monitors user activity:
+//! - Linux: D-Bus (Mutter IdleMonitor, freedesktop.ScreenSaver)
+//! - macOS: ioreg command for HIDIdleTime
+//! - Windows: Win32 GetLastInputInfo API
+
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use dbus::blocking::Connection;
 
 use crate::api::AuthTokenState;
 use crate::constants::POLL_INTERVAL_SECS;
@@ -10,9 +16,6 @@ use crate::models::{ActivityStats, IdleEvent};
 use crate::timer_state::TimerStateInner;
 
 /// Tracks user activity statistics over time.
-///
-/// This struct accumulates active and idle seconds based on periodic
-/// polling of system idle state.
 #[derive(Debug)]
 pub struct ActivityTracker {
     pub active_secs: i64,
@@ -27,7 +30,6 @@ impl Default for ActivityTracker {
 }
 
 impl ActivityTracker {
-    /// Creates a new activity tracker with zeroed counters.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -37,20 +39,17 @@ impl ActivityTracker {
         }
     }
 
-    /// Records active time for the given duration.
     #[inline]
     pub fn record_active(&mut self, secs: i64) {
         self.active_secs += secs;
         self.last_activity_at = Utc::now();
     }
 
-    /// Records idle time for the given duration.
     #[inline]
     pub fn record_idle(&mut self, secs: i64) {
         self.idle_secs += secs;
     }
 
-    /// Returns current activity statistics.
     #[must_use]
     pub fn stats(&self) -> ActivityStats {
         let total = self.active_secs + self.idle_secs;
@@ -67,7 +66,6 @@ impl ActivityTracker {
         }
     }
 
-    /// Resets all counters to zero.
     pub fn reset(&mut self) {
         self.active_secs = 0;
         self.idle_secs = 0;
@@ -77,10 +75,223 @@ impl ActivityTracker {
 
 pub type ActivityState = StdMutex<ActivityTracker>;
 
+// ============================================================================
+// Platform-specific idle detection
+// ============================================================================
+
+#[cfg(target_os = "linux")]
+mod platform {
+    use dbus::blocking::Connection;
+    use std::time::Duration;
+
+    pub struct IdleDetector {
+        conn: Connection,
+    }
+
+    impl IdleDetector {
+        pub fn new() -> Result<Self, String> {
+            let conn = Connection::new_session()
+                .map_err(|e| format!("D-Bus connection failed: {}", e))?;
+            Ok(Self { conn })
+        }
+
+        pub fn get_idle_secs(&self) -> u64 {
+            self.query_mutter_idle()
+                .or_else(|| self.query_freedesktop_idle())
+                .unwrap_or(0)
+        }
+
+        pub fn is_locked(&self) -> bool {
+            self.check_gnome_screensaver()
+                .or_else(|| self.check_freedesktop_screensaver())
+                .or_else(|| self.check_logind_locked())
+                .unwrap_or(false)
+        }
+
+        fn query_mutter_idle(&self) -> Option<u64> {
+            let proxy = self.conn.with_proxy(
+                "org.gnome.Mutter.IdleMonitor",
+                "/org/gnome/Mutter/IdleMonitor/Core",
+                Duration::from_millis(500),
+            );
+            let result: Result<(u64,), _> = proxy.method_call(
+                "org.gnome.Mutter.IdleMonitor",
+                "GetIdletime",
+                (),
+            );
+            result.ok().map(|(ms,)| ms / 1000)
+        }
+
+        fn query_freedesktop_idle(&self) -> Option<u64> {
+            let proxy = self.conn.with_proxy(
+                "org.freedesktop.ScreenSaver",
+                "/org/freedesktop/ScreenSaver",
+                Duration::from_millis(500),
+            );
+            let result: Result<(u32,), _> = proxy.method_call(
+                "org.freedesktop.ScreenSaver",
+                "GetSessionIdleTime",
+                (),
+            );
+            result.ok().map(|(ms,)| (ms / 1000) as u64)
+        }
+
+        fn check_gnome_screensaver(&self) -> Option<bool> {
+            let proxy = self.conn.with_proxy(
+                "org.gnome.ScreenSaver",
+                "/org/gnome/ScreenSaver",
+                Duration::from_millis(200),
+            );
+            proxy
+                .method_call("org.gnome.ScreenSaver", "GetActive", ())
+                .map(|r: (bool,)| r.0)
+                .ok()
+        }
+
+        fn check_freedesktop_screensaver(&self) -> Option<bool> {
+            let proxy = self.conn.with_proxy(
+                "org.freedesktop.ScreenSaver",
+                "/org/freedesktop/ScreenSaver",
+                Duration::from_millis(200),
+            );
+            proxy
+                .method_call("org.freedesktop.ScreenSaver", "GetActive", ())
+                .map(|r: (bool,)| r.0)
+                .ok()
+        }
+
+        fn check_logind_locked(&self) -> Option<bool> {
+            let proxy = self.conn.with_proxy(
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1/session/auto",
+                Duration::from_millis(200),
+            );
+            use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
+            proxy
+                .get::<bool>("org.freedesktop.login1.Session", "LockedHint")
+                .ok()
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use std::process::Command;
+
+    pub struct IdleDetector;
+
+    impl IdleDetector {
+        pub fn new() -> Result<Self, String> {
+            Ok(Self)
+        }
+
+        pub fn get_idle_secs(&self) -> u64 {
+            let output = match Command::new("ioreg")
+                .args(["-c", "IOHIDSystem", "-d", "4"])
+                .output()
+            {
+                Ok(o) => o,
+                Err(_) => return 0,
+            };
+
+            if !output.status.success() {
+                return 0;
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("HIDIdleTime") {
+                    if let Some(value) = line.split('=').nth(1) {
+                        if let Ok(nanos) = value.trim().parse::<u64>() {
+                            return nanos / 1_000_000_000;
+                        }
+                    }
+                }
+            }
+            0
+        }
+
+        pub fn is_locked(&self) -> bool {
+            let output = Command::new("pgrep")
+                .args(["-x", "ScreenSaverEngine"])
+                .output();
+            matches!(output, Ok(o) if o.status.success())
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod platform {
+    use std::mem::size_of;
+
+    #[repr(C)]
+    struct LASTINPUTINFO {
+        cb_size: u32,
+        dw_time: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetLastInputInfo(plii: *mut LASTINPUTINFO) -> i32;
+        fn GetTickCount() -> u32;
+        fn GetForegroundWindow() -> isize;
+    }
+
+    pub struct IdleDetector;
+
+    impl IdleDetector {
+        pub fn new() -> Result<Self, String> {
+            Ok(Self)
+        }
+
+        pub fn get_idle_secs(&self) -> u64 {
+            unsafe {
+                let mut lii = LASTINPUTINFO {
+                    cb_size: size_of::<LASTINPUTINFO>() as u32,
+                    dw_time: 0,
+                };
+
+                if GetLastInputInfo(&mut lii) != 0 {
+                    let idle_ms = GetTickCount().wrapping_sub(lii.dw_time);
+                    (idle_ms / 1000) as u64
+                } else {
+                    0
+                }
+            }
+        }
+
+        pub fn is_locked(&self) -> bool {
+            unsafe { GetForegroundWindow() == 0 }
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+mod platform {
+    pub struct IdleDetector;
+
+    impl IdleDetector {
+        pub fn new() -> Result<Self, String> {
+            Err("Idle detection not supported on this platform".to_string())
+        }
+
+        pub fn get_idle_secs(&self) -> u64 {
+            0
+        }
+
+        pub fn is_locked(&self) -> bool {
+            false
+        }
+    }
+}
+
+use platform::IdleDetector;
+
 fn get_token(auth_state: &Arc<StdMutex<AuthTokenState>>) -> Option<String> {
     auth_state.lock().ok().and_then(|s| s.access_token.clone())
 }
 
+/// Spawns the idle monitor thread with cross-platform support.
 pub fn spawn_idle_monitor(
     activity_state: Arc<ActivityState>,
     timer_state: Arc<StdMutex<TimerStateInner>>,
@@ -91,14 +302,13 @@ pub fn spawn_idle_monitor(
     std::thread::spawn(move || {
         eprintln!("[idle] Idle monitor thread started (threshold={}s)", idle_threshold_secs);
 
-        // Reuse a single D-Bus connection for the lifetime of this thread
-        let conn = match Connection::new_session() {
-            Ok(c) => {
-                eprintln!("[idle] D-Bus session connected");
-                c
+        let detector = match IdleDetector::new() {
+            Ok(d) => {
+                eprintln!("[idle] Idle detector initialized");
+                d
             }
             Err(e) => {
-                eprintln!("[idle] FATAL: Cannot connect to D-Bus: {}", e);
+                eprintln!("[idle] Failed to initialize idle detector: {}", e);
                 return;
             }
         };
@@ -112,33 +322,16 @@ pub fn spawn_idle_monitor(
         loop {
             std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
 
-            // Get system-wide idle time via D-Bus (Mutter IdleMonitor)
-            let proxy = conn.with_proxy(
-                "org.gnome.Mutter.IdleMonitor",
-                "/org/gnome/Mutter/IdleMonitor/Core",
-                Duration::from_millis(2000),
-            );
-            let idle_ms: u64 = match proxy.method_call(
-                "org.gnome.Mutter.IdleMonitor",
-                "GetIdletime",
-                (),
-            ) {
-                Ok((ms,)) => ms,
-                Err(e) => {
-                    eprintln!("[idle] D-Bus GetIdletime failed: {}", e);
-                    continue;
-                }
-            };
+            let is_locked = detector.is_locked();
+            let system_idle_secs = detector.get_idle_secs();
+            let user_is_active = system_idle_secs < POLL_INTERVAL_SECS + 1 && !is_locked;
 
-            let system_idle_secs = idle_ms / 1000;
-            let user_is_active = system_idle_secs < POLL_INTERVAL_SECS + 1;
-
-            // Log every 10 iterations (~20 seconds) to reduce noise
+            // Log every 10 iterations (~20 seconds)
             log_counter += 1;
-            if log_counter.is_multiple_of(10) {
+            if log_counter % 10 == 0 {
                 eprintln!(
-                    "[idle] status: idle_ms={}, is_idle={}, paused_task={:?}",
-                    idle_ms, is_idle, paused_task_id
+                    "[idle] status: idle_secs={}, is_idle={}, paused_task={:?}",
+                    system_idle_secs, is_idle, paused_task_id
                 );
             }
 
@@ -176,14 +369,13 @@ pub fn spawn_idle_monitor(
                         }
                     }
 
-                    // Reset idle state
                     is_idle = false;
                     idle_started_at = None;
                     paused_task_id = None;
                     paused_task_name = None;
                 }
-            } else if !is_idle && system_idle_secs >= idle_threshold_secs {
-                // IDLE DETECTED — stop running timer
+            } else if !is_idle && (system_idle_secs >= idle_threshold_secs || is_locked) {
+                // IDLE DETECTED
                 idle_started_at = Some(Utc::now() - chrono::Duration::seconds(system_idle_secs as i64));
                 is_idle = true;
 
