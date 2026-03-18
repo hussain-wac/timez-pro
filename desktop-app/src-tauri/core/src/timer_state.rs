@@ -159,13 +159,20 @@ impl TimerStateInner {
                 let client_stopped = chrono::Utc::now().to_rfc3339();
 
                 if elapsed > 0 {
-                    let _ = api::sync_time(
+                    match api::sync_time(
                         task_id,
                         elapsed,
                         &client_started,
                         Some(&client_stopped),
                         token,
-                    );
+                    ) {
+                        Ok(_response) => {
+                            println!("[timer] Stop synced {} seconds for task {}", elapsed, task_id);
+                        }
+                        Err(e) => {
+                            eprintln!("[timer] Failed to sync stop: {}", e);
+                        }
+                    }
                 }
             }
         }

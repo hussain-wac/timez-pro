@@ -4233,6 +4233,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dbus",
+ "notify-rust",
  "open",
  "serde",
  "serde_json",
@@ -4260,6 +4261,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dbus",
+ "notify-rust",
  "serde",
  "serde_json",
  "timez-core",

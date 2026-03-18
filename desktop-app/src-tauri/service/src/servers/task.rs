@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::Timelike;
+use notify_rust::Notification;
 use timez_core::models::{Task, TimerStatus};
 use timez_core::protocol::{Request, ResponseData};
 use timez_core::timer_state::TimerStateInner;
@@ -8,6 +9,42 @@ use timez_core::timer_state::TimerStateInner;
 use crate::auth_store;
 use crate::runtime;
 use crate::ServiceKind;
+
+/// Send a desktop notification
+fn send_notification(title: &str, body: &str) {
+    if let Err(e) = Notification::new()
+        .summary(title)
+        .body(body)
+        .appname("Timez Pro")
+        .timeout(4000)
+        .show()
+    {
+        eprintln!("[notification] Failed to send: {}", e);
+    }
+}
+
+/// Format seconds into a human-readable string
+fn format_duration(secs: i64) -> String {
+    if secs < 60 {
+        format!("{} sec", secs)
+    } else if secs < 3600 {
+        let mins = secs / 60;
+        let remaining_secs = secs % 60;
+        if remaining_secs > 0 {
+            format!("{} min {} sec", mins, remaining_secs)
+        } else {
+            format!("{} min", mins)
+        }
+    } else {
+        let hrs = secs / 3600;
+        let mins = (secs % 3600) / 60;
+        if mins > 0 {
+            format!("{} hr {} min", hrs, mins)
+        } else {
+            format!("{} hr", hrs)
+        }
+    }
+}
 
 pub fn run(parent_pid: Option<u32>) -> Result<(), String> {
     let timer_state = Arc::new(Mutex::new(TimerStateInner::new()));
@@ -114,6 +151,8 @@ fn refresh_tasks(timer_state: &Arc<Mutex<TimerStateInner>>) -> Result<Vec<Task>,
 fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
     use timez_core::api;
 
+    const SYNC_INTERVAL_SECS: u64 = 30; // Sync every 30 seconds
+
     std::thread::spawn(move || {
         // Initial sync
         {
@@ -125,13 +164,14 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
         }
 
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(60)); // 1 minute
+            std::thread::sleep(std::time::Duration::from_secs(SYNC_INTERVAL_SECS));
 
             let now = chrono::Utc::now();
 
             // Check for midnight reset
             if now.hour() == 0 && now.minute() == 0 {
                 println!("[sync] Midnight reset - stopping timer");
+                send_notification("Timez Pro", "Midnight reset - timer stopped");
                 if let Ok(mut timer) = timer_state.lock() {
                     if timer.running_task_id.is_some() {
                         // Sync final time before reset
@@ -167,11 +207,33 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
                     let client_started = started_at.to_rfc3339();
 
                     if elapsed > 0 {
+                        // Show notification before syncing
+                        send_notification(
+                            "Timez Pro - Syncing",
+                            &format!("Syncing {} to server...", format_duration(elapsed))
+                        );
+
                         match api::sync_time(task_id, elapsed, &client_started, None, &token) {
-                            Ok(_) => {
-                                println!("[sync] Synced {} seconds for task {}", elapsed, task_id)
+                            Ok(response) => {
+                                println!(
+                                    "[sync] Handshake confirmed: task_id={}, backend_duration={:?}",
+                                    response.task_id, response.duration
+                                );
+                                println!("[sync] Synced {} seconds for task {}", elapsed, task_id);
+
+                                // Success notification
+                                send_notification(
+                                    "Timez Pro - Synced",
+                                    &format!("{} synced successfully", format_duration(elapsed))
+                                );
                             }
-                            Err(e) => println!("[sync] Error: {}", e),
+                            Err(e) => {
+                                println!("[sync] Error: {}", e);
+                                send_notification(
+                                    "Timez Pro - Sync Failed",
+                                    &format!("Failed to sync: {}", e)
+                                );
+                            }
                         }
                     }
                 }
