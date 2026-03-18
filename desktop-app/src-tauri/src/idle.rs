@@ -45,55 +45,75 @@ impl ActivityTracker {
 pub type ActivityState = StdMutex<ActivityTracker>;
 
 fn is_session_locked(conn: &Connection) -> bool {
-    check_screen_active(conn)
+    check_gnome_screensaver_active(conn)
+        .or_else(|| check_freedesktop_screensaver_active(conn))
+        .or_else(|| check_logind_locked(conn))
+        .unwrap_or(false)
 }
 
-fn check_screen_active(conn: &Connection) -> bool {
+fn check_gnome_screensaver_active(conn: &Connection) -> Option<bool> {
+    let proxy = conn.with_proxy(
+        "org.gnome.ScreenSaver",
+        "/org/gnome/ScreenSaver",
+        Duration::from_millis(200),
+    );
+    proxy
+        .method_call("org.gnome.ScreenSaver", "GetActive", ())
+        .map(|r: (bool,)| r.0)
+        .ok()
+}
+
+fn check_freedesktop_screensaver_active(conn: &Connection) -> Option<bool> {
     let proxy = conn.with_proxy(
         "org.freedesktop.ScreenSaver",
         "/org/freedesktop/ScreenSaver",
-        Duration::from_millis(500),
+        Duration::from_millis(200),
     );
-
     proxy
         .method_call("org.freedesktop.ScreenSaver", "GetActive", ())
         .map(|r: (bool,)| r.0)
-        .unwrap_or(false)
+        .ok()
 }
 
-fn check_screen_locked(conn: &Connection) -> bool {
-    let proxy = conn.with_proxy(
-        "org.freedesktop.ScreenSaver",
-        "/org/freedesktop/ScreenSaver",
-        Duration::from_millis(500),
-    );
-
-    proxy
-        .method_call::<_, (bool,)>("org.freedesktop.ScreenSaver", "GetActive", ())
-        .map(|(active,)| active)
-        .unwrap_or(false)
-}
-
-fn check_logind(conn: &Connection) -> bool {
+fn check_logind_locked(conn: &Connection) -> Option<bool> {
     let proxy = conn.with_proxy(
         "org.freedesktop.login1",
-        "/org/freedesktop/login1",
-        Duration::from_millis(500),
+        "/org/freedesktop/login1/session/auto",
+        Duration::from_millis(200),
     );
 
+    use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
     proxy
-        .method_call::<_, (String,)>("org.freedesktop.login1.Manager", "GetSession", ())
-        .map(|(session,)| session.contains("self"))
-        .unwrap_or(false)
+        .get::<bool>("org.freedesktop.login1.Session", "LockedHint")
+        .ok()
 }
 
 /// Helper to read the current auth token
 fn get_token(app_handle: &tauri::AppHandle) -> Option<String> {
     let auth = app_handle.state::<AuthToken>();
-    auth.inner()
-        .lock()
-        .ok()
-        .and_then(|s| s.access_token.clone())
+    match auth.inner().lock() {
+        Ok(s) => s.access_token.clone(),
+        Err(e) => {
+            eprintln!("[idle] Failed to get auth token (poisoned): {}", e);
+            // Try to recover from poisoned mutex
+            auth.clear_poison();
+            auth.inner().lock().ok().and_then(|s| s.access_token.clone())
+        }
+    }
+}
+
+/// Lock timer state with poison recovery
+fn lock_timer_state<'a>(
+    timer_state: &'a tauri::State<'_, TimerState>,
+) -> Option<std::sync::MutexGuard<'a, crate::timer_state::TimerStateInner>> {
+    match timer_state.inner().lock() {
+        Ok(guard) => Some(guard),
+        Err(e) => {
+            eprintln!("[idle] Timer state mutex poisoned: {}", e);
+            timer_state.clear_poison();
+            timer_state.inner().lock().ok()
+        }
+    }
 }
 
 pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64) {
@@ -132,7 +152,7 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
             let proxy = conn.with_proxy(
                 "org.gnome.Mutter.IdleMonitor",
                 "/org/gnome/Mutter/IdleMonitor/Core",
-                Duration::from_millis(2000),
+                Duration::from_millis(500),
             );
             let idle_ms: u64 =
                 match proxy.method_call("org.gnome.Mutter.IdleMonitor", "GetIdletime", ()) {
@@ -164,7 +184,7 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
                 );
             }
 
-            // Update activity tracker
+            // Update activity tracker (short lock, no I/O)
             {
                 let state = app_handle.state::<ActivityState>();
                 if let Ok(mut t) = state.inner().lock() {
@@ -177,6 +197,9 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
                         }
                     }
                     app_handle.emit("activity-update", t.stats()).ok();
+                } else {
+                    // Try to recover from poisoned mutex
+                    state.clear_poison();
                 }
             }
 
@@ -233,41 +256,32 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
                         Some(Utc::now() - chrono::Duration::seconds(system_idle_secs as i64));
                     is_idle = true;
 
-                    // Read timer state and stop if running
-                    // Do NOT hold the lock while making API calls
+                    // Read timer state (short lock, no I/O)
                     let task_info = {
                         let timer_state = app_handle.state::<TimerState>();
-                        match timer_state.inner().lock() {
-                            Ok(s) => {
-                                if let Some(task_id) = s.running_task_id {
-                                    let task_name = s
-                                        .cached_tasks
-                                        .iter()
-                                        .find(|t| t.id == task_id)
-                                        .map(|t| t.name.clone())
-                                        .unwrap_or_else(|| format!("Task {}", task_id));
-                                    Some((task_id, task_name))
-                                } else {
-                                    eprintln!("[idle] No timer was running");
-                                    None
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("[idle] Failed to lock timer state: {}", e);
-                                None
-                            }
-                        }
+                        lock_timer_state(&timer_state).and_then(|s| {
+                            s.running_task_id.map(|task_id| {
+                                let task_name = s
+                                    .cached_tasks
+                                    .iter()
+                                    .find(|t| t.id == task_id)
+                                    .map(|t| t.name.clone())
+                                    .unwrap_or_else(|| format!("Task {}", task_id));
+                                (task_id, task_name)
+                            })
+                        })
                     };
 
                     if let Some((task_id, task_name)) = task_info {
                         eprintln!("[idle] Stopping timer for task {}: {}", task_id, task_name);
 
                         let token = get_token(&app_handle);
+                        let local_store = app_handle.state::<crate::local_store::LocalTimeStorage>();
 
-                        // Now stop the timer (separate lock scope)
+                        // Stop the timer (lock is released before API call inside stop_current)
                         let timer_state = app_handle.state::<TimerState>();
-                        if let Ok(mut s) = timer_state.inner().lock() {
-                            match s.stop_current(&token) {
+                        if let Some(mut s) = lock_timer_state(&timer_state) {
+                            match s.stop_current(&token, &local_store) {
                                 Ok(()) => eprintln!("[idle] Timer stopped successfully"),
                                 Err(e) => eprintln!("[idle] Failed to stop timer: {}", e),
                             }
@@ -276,6 +290,8 @@ pub fn spawn_idle_monitor(app_handle: tauri::AppHandle, idle_threshold_secs: u64
                         paused_task_id = Some(task_id);
                         paused_task_name = Some(task_name);
                         app_handle.emit("timer-stopped", ()).ok();
+                    } else {
+                        eprintln!("[idle] No timer was running");
                     }
                 }
             }

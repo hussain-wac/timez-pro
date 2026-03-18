@@ -79,17 +79,6 @@ class SyncTimeRequest(BaseModel):
     client_stopped_at: Optional[datetime] = None
 
 
-class CrashRecoveryRequest(BaseModel):
-    task_id: int
-    client_last_stopped_at: datetime
-
-
-class CrashRecoveryResponse(BaseModel):
-    success: bool
-    message: str
-    recovered_entry: Optional[TimeEntryResponse] = None
-
-
 class StopTimerRequest(BaseModel):
     client_stopped_at: Optional[datetime] = None
 

@@ -98,9 +98,15 @@ pub fn run() {
                         if running_task_id.is_some() {
                             let timer_state = app.state::<timer_state::TimerState>();
                             let local_store = app.state::<local_store::LocalTimeStorage>();
-                            if let Ok(mut s) = timer_state.inner().lock() {
-                                if s.stop_current(&token, &local_store).is_ok() {
-                                    app.emit("timer-stopped", ()).ok();
+                            match timer_state.inner().lock() {
+                                Ok(mut s) => {
+                                    if s.stop_current(&token, &local_store).is_ok() {
+                                        app.emit("timer-stopped", ()).ok();
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[tray] Timer state mutex poisoned: {}", e);
+                                    timer_state.clear_poison();
                                 }
                             }
                         } else {
@@ -112,9 +118,15 @@ pub fn run() {
                             if let Some(task_id) = last_task_id {
                                 let timer_state = app.state::<timer_state::TimerState>();
                                 let local_store = app.state::<local_store::LocalTimeStorage>();
-                                if let Ok(mut s) = timer_state.inner().lock() {
-                                    if s.start_task(task_id, &token, &local_store).is_ok() {
-                                        app.emit("timer-started", ()).ok();
+                                match timer_state.inner().lock() {
+                                    Ok(mut s) => {
+                                        if s.start_task(task_id, &local_store).is_ok() {
+                                            app.emit("timer-started", ()).ok();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[tray] Timer state mutex poisoned: {}", e);
+                                        timer_state.clear_poison();
                                     }
                                 }
                             } else if let Some(window) = app.get_webview_window("main") {

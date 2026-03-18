@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -68,6 +68,26 @@ pub struct TimerStateInner {
 pub type TimerState = Mutex<TimerStateInner>;
 
 const SYNC_INTERVAL_SECS: u64 = 30; // 30 seconds
+
+/// Helper trait to recover from poisoned mutex
+trait RecoverableMutex<T> {
+    fn lock_or_recover(&self) -> Result<std::sync::MutexGuard<'_, T>, String>;
+}
+
+impl<T> RecoverableMutex<T> for Mutex<T> {
+    fn lock_or_recover(&self) -> Result<std::sync::MutexGuard<'_, T>, String> {
+        self.lock().map_err(|e: PoisonError<_>| {
+            eprintln!("[CRITICAL] Mutex poisoned, recovering: {}", e);
+            // In a real app, you might want to clear the poison and recover
+            // For now, we'll return the error but still try to use the data
+            format!("Mutex poisoned: {}", e)
+        }).or_else(|_| {
+            // Try to recover by clearing the poison
+            self.clear_poison();
+            self.lock().map_err(|e| format!("Failed to recover mutex: {}", e))
+        })
+    }
+}
 
 impl TimerStateInner {
     pub fn new() -> Self {
@@ -203,21 +223,96 @@ impl TimerStateInner {
         }
         None
     }
+
+    /// Stop the currently running timer and sync to backend
+    pub fn stop_current(
+        &mut self,
+        token: &Option<String>,
+        local_store: &LocalTimeStorage,
+    ) -> Result<(), String> {
+        if let Some(task_id) = self.running_task_id {
+            // Calculate total elapsed before stopping
+            let live_elapsed = self
+                .timer_started_at
+                .map(|started| (Utc::now() - started).num_seconds().max(0))
+                .unwrap_or(0);
+            let base_elapsed = self.base_elapsed.get(&task_id).copied().unwrap_or(0);
+            let total_elapsed = base_elapsed + live_elapsed;
+            let client_started = self.client_started_at.clone()
+                .unwrap_or_else(|| Utc::now().to_rfc3339());
+            let client_stopped = Utc::now().to_rfc3339();
+
+            // Stop locally first
+            self.stop_current_local(local_store);
+
+            // Sync to backend if we have time to sync
+            if total_elapsed > 0 {
+                match api::sync_time(
+                    task_id,
+                    total_elapsed,
+                    &client_started,
+                    Some(&client_stopped),
+                    token,
+                ) {
+                    Ok(response) => {
+                        eprintln!(
+                            "[timer] Stop synced: task_id={}, duration={:?}, is_synced={}",
+                            response.task_id, response.duration, response.is_synced
+                        );
+                        local_store.mark_synced(task_id, total_elapsed);
+                    }
+                    Err(e) => {
+                        eprintln!("[timer] Failed to sync stop: {}", e);
+                        // Don't return error - local stop already succeeded
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Extract sync data without holding lock during network I/O
+    pub fn get_sync_data(&self) -> Option<SyncData> {
+        self.running_task_id.map(|task_id| {
+            let live_elapsed = self
+                .timer_started_at
+                .map(|started| (Utc::now() - started).num_seconds().max(0))
+                .unwrap_or(0);
+            let base_elapsed = self.base_elapsed.get(&task_id).copied().unwrap_or(0);
+            SyncData {
+                task_id,
+                total_elapsed: base_elapsed + live_elapsed,
+                client_started_at: self.client_started_at.clone()
+                    .unwrap_or_else(|| Utc::now().to_rfc3339()),
+            }
+        })
+    }
 }
 
-/// Spawns a background thread that syncs with the external API every 10 minutes
+/// Data needed for sync, extracted from state
+#[derive(Clone)]
+pub struct SyncData {
+    pub task_id: i64,
+    pub total_elapsed: i64,
+    pub client_started_at: String,
+}
+
+/// Spawns a background thread that syncs with the external API every 30 seconds
 pub fn spawn_sync_thread(app_handle: AppHandle) {
     std::thread::spawn(move || {
         // Initial sync
         {
             let token = get_token(&app_handle);
             let state = app_handle.state::<TimerState>();
-            if let Ok(mut s) = state.inner().lock() {
-                s.sync_from_api(&token);
-                println!(
-                    "[sync] Initial sync complete, {} tasks loaded",
-                    s.cached_tasks.len()
-                );
+            match state.inner().lock_or_recover() {
+                Ok(mut s) => {
+                    s.sync_from_api(&token);
+                    println!(
+                        "[sync] Initial sync complete, {} tasks loaded",
+                        s.cached_tasks.len()
+                    );
+                }
+                Err(e) => eprintln!("[sync] Initial sync failed: {}", e),
             }
         }
 
@@ -228,15 +323,15 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
             let state = app_handle.state::<TimerState>();
             let local_store = app_handle.state::<LocalTimeStorage>();
 
-            // Check for midnight reset
-            let now = Utc::now();
-            if now.hour() == 0 && now.minute() == 0 {
-                // Reset timer at midnight
-                if let Ok(mut s) = state.inner().lock() {
-                    if s.running_task_id.is_some() {
-                        let local_store = app_handle.state::<LocalTimeStorage>();
-                        s.stop_current_local(&local_store);
-                        let _ = app_handle.emit("midnight-reset", ());
+            // Check for midnight reset (separate lock scope)
+            {
+                let now = Utc::now();
+                if now.hour() == 0 && now.minute() == 0 {
+                    if let Ok(mut s) = state.inner().lock_or_recover() {
+                        if s.running_task_id.is_some() {
+                            s.stop_current_local(&local_store);
+                            let _ = app_handle.emit("midnight-reset", ());
+                        }
                     }
                 }
             }
@@ -244,174 +339,101 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
             // Emit sync notification
             let _ = app_handle.emit("sync-in-progress", ());
 
-            if let Ok(mut s) = state.inner().lock() {
-                println!("[sync] Syncing with API...");
+            // Get unsynced entries OUTSIDE the lock
+            let entries = local_store.get_unsynced_entries();
+            println!("[sync] Found {} unsynced entries", entries.len());
 
-                // Get unsynced entries from local store and sync them
-                let entries = local_store.get_unsynced_entries();
-                println!("[sync] Found {} unsynced entries", entries.len());
+            // Process each entry WITHOUT holding the mutex
+            for entry in entries {
+                let task_id = entry.task_id;
+                let client_started_at = entry.client_started_at.clone();
+                let client_stopped_at = entry.client_stopped_at.clone();
 
-                for entry in entries {
-                    let task_id = entry.task_id;
-                    let client_started_at = entry.client_started_at.clone();
-                    let client_stopped_at = entry.client_stopped_at.clone();
+                // Get elapsed from the LAST timestamp (cumulative, not delta)
+                let total_elapsed: i64 =
+                    entry.timestamps.last().map(|t| t.elapsed_secs).unwrap_or(0);
 
-                    // Get elapsed from the LAST timestamp (cumulative, not delta)
-                    let total_elapsed: i64 =
-                        entry.timestamps.last().map(|t| t.elapsed_secs).unwrap_or(0);
+                // Calculate how much NEW time we're syncing
+                let new_time_to_sync = total_elapsed - entry.last_synced_elapsed;
 
-                    // Calculate how much NEW time we're syncing
-                    let new_time_to_sync = total_elapsed - entry.last_synced_elapsed;
+                println!(
+                    "[sync] Task {} has {} timestamps, total {} secs, new {} secs",
+                    task_id,
+                    entry.timestamps.len(),
+                    total_elapsed,
+                    new_time_to_sync
+                );
 
-                    println!(
-                        "[sync] Task {} has {} timestamps, total {} secs, new {} secs",
-                        task_id,
-                        entry.timestamps.len(),
-                        total_elapsed,
-                        new_time_to_sync
+                if total_elapsed > 0 && new_time_to_sync > 0 {
+                    // Send desktop notification BEFORE syncing
+                    send_notification(
+                        &app_handle,
+                        "Timez Pro - Syncing",
+                        &format!("Syncing {} to server...", format_duration(new_time_to_sync))
                     );
 
-                    if total_elapsed > 0 && new_time_to_sync > 0 {
-                        // Send desktop notification BEFORE syncing
-                        send_notification(
-                            &app_handle,
-                            "Timez Pro - Syncing",
-                            &format!("Syncing {} to server...", format_duration(new_time_to_sync))
-                        );
+                    // Network I/O happens OUTSIDE mutex lock
+                    let result = api::sync_time(
+                        task_id,
+                        total_elapsed,
+                        &client_started_at,
+                        client_stopped_at.as_deref(),
+                        &token,
+                    );
 
-                        let result = api::sync_time(
-                            task_id,
-                            total_elapsed,
-                            &client_started_at,
-                            client_stopped_at.as_deref(),
-                            &token,
-                        );
+                    match result {
+                        Err(e) => {
+                            println!("[sync] Error syncing task {}: {}", task_id, e);
+                            send_notification(
+                                &app_handle,
+                                "Timez Pro - Sync Failed",
+                                &format!("Failed to sync time: {}", e)
+                            );
+                        }
+                        Ok(response) => {
+                            // Handshake confirmed - backend received the data
+                            println!(
+                                "[sync] Handshake confirmed: task_id={}, backend_duration={:?}, is_synced={}",
+                                response.task_id, response.duration, response.is_synced
+                            );
+                            println!(
+                                "[sync] Synced {} seconds for task {} (new: {} seconds)",
+                                total_elapsed, task_id, new_time_to_sync
+                            );
+                            local_store.mark_synced(task_id, total_elapsed);
 
-                        match result {
-                            Err(e) => {
-                                println!("[sync] Error syncing task {}: {}", task_id, e);
-                                send_notification(
-                                    &app_handle,
-                                    "Timez Pro - Sync Failed",
-                                    &format!("Failed to sync time: {}", e)
-                                );
-                            }
-                            Ok(response) => {
-                                // Handshake confirmed - backend received the data
-                                println!(
-                                    "[sync] Handshake confirmed: task_id={}, backend_duration={:?}, is_synced={}",
-                                    response.task_id, response.duration, response.is_synced
-                                );
-                                println!(
-                                    "[sync] Synced {} seconds for task {} (new: {} seconds)",
-                                    total_elapsed, task_id, new_time_to_sync
-                                );
-                                local_store.mark_synced(task_id, total_elapsed);
+                            // Send success notification
+                            send_notification(
+                                &app_handle,
+                                "Timez Pro - Synced",
+                                &format!("{} synced successfully", format_duration(new_time_to_sync))
+                            );
 
-                                // Send success notification
-                                send_notification(
-                                    &app_handle,
-                                    "Timez Pro - Synced",
-                                    &format!("{} synced successfully", format_duration(new_time_to_sync))
-                                );
-
-                                // Also emit event for UI update
-                                let _ = app_handle.emit(
-                                    "sync-complete",
-                                    serde_json::json!({
-                                        "task_id": task_id,
-                                        "synced_seconds": new_time_to_sync,
-                                        "total_seconds": total_elapsed,
-                                        "backend_confirmed": response.is_synced
-                                    }),
-                                );
-                            }
+                            // Also emit event for UI update
+                            let _ = app_handle.emit(
+                                "sync-complete",
+                                serde_json::json!({
+                                    "task_id": task_id,
+                                    "synced_seconds": new_time_to_sync,
+                                    "total_seconds": total_elapsed,
+                                    "backend_confirmed": response.is_synced
+                                }),
+                            );
                         }
                     }
                 }
+            }
 
-                // Clean up completed entries
-                local_store.cleanup_completed_entries();
+            // Clean up completed entries
+            local_store.cleanup_completed_entries();
 
+            // Sync from API (separate lock scope, quick operation)
+            if let Ok(mut s) = state.inner().lock_or_recover() {
                 s.sync_from_api(&token);
                 println!("[sync] Sync complete");
             }
         }
     });
-}
-
-/// Crash recovery: check if there was a running timer that wasn't stopped properly
-pub fn crash_recovery_on_startup(app_handle: &AppHandle) {
-    let local_store = app_handle.state::<LocalTimeStorage>();
-
-    // First try to get token from memory, then from local storage
-    let token = get_token(app_handle).or_else(|| local_store.get_auth_token());
-
-    println!("[crash-recovery] Starting timestamp verification on startup...");
-
-    // Get all unsynced entries
-    let entries = local_store.get_unsynced_entries();
-    println!("[crash-recovery] Found {} unsynced entries", entries.len());
-
-    // Only do crash recovery if timer was actually running when app crashed
-    if local_store.was_running() {
-        if let Some(task_id) = local_store.get_last_running_task_id() {
-            if let Some(entry) = entries.iter().find(|e| e.task_id == task_id) {
-                println!(
-                    "[crash-recovery] Found running task {} (started at: {})",
-                    task_id, entry.client_started_at
-                );
-
-                // Use last timestamp from array for accurate crash recovery
-                let recovery_timestamp = entry
-                    .timestamps
-                    .last()
-                    .map(|t| t.timestamp.clone())
-                    .unwrap_or_else(|| entry.client_started_at.clone());
-
-                // Get the last recorded elapsed time for recovery
-                let last_elapsed = entry
-                    .timestamps
-                    .last()
-                    .map(|t| t.elapsed_secs)
-                    .unwrap_or(0);
-
-                if let Some(ref tok) = token {
-                    match api::crash_recovery(task_id, &recovery_timestamp, &Some(tok.clone())) {
-                        Ok(_) => {
-                            println!(
-                                "[crash-recovery] Successfully recovered, stale time discarded"
-                            );
-                            local_store.mark_synced(task_id, last_elapsed);
-
-                            let _ = app_handle.emit(
-                                "crash-recovery-complete",
-                                serde_json::json!({
-                                    "task_id": task_id,
-                                    "action": "crash_recovery"
-                                }),
-                            );
-                        }
-                        Err(e) => {
-                            println!("[crash-recovery] API Error: {}", e);
-                        }
-                    }
-                } else {
-                    local_store.clear_running_state();
-                    let _ = app_handle.emit(
-                        "crash-recovery-complete",
-                        serde_json::json!({
-                            "task_id": task_id,
-                            "pending": true
-                        }),
-                    );
-                }
-            }
-        }
-    } else {
-        // Timer was NOT running - this is normal startup
-        println!("[crash-recovery] Timer was not running, normal startup");
-    }
 }
 
 /// Spawns a thread that records timestamps every 5 seconds
@@ -423,9 +445,9 @@ pub fn spawn_timestamp_thread(app_handle: AppHandle) {
             let local_store = app_handle.state::<LocalTimeStorage>();
             let timer_state = app_handle.state::<TimerState>();
 
-            // Get running task and elapsed time
-            let (task_id, elapsed) = {
-                if let Ok(s) = timer_state.inner().lock() {
+            // Get running task and elapsed time (short lock)
+            let (task_id, elapsed) = match timer_state.inner().lock_or_recover() {
+                Ok(s) => {
                     if let Some(id) = s.running_task_id {
                         let elapsed = s
                             .timer_started_at
@@ -435,12 +457,14 @@ pub fn spawn_timestamp_thread(app_handle: AppHandle) {
                     } else {
                         (None, 0)
                     }
-                } else {
+                }
+                Err(e) => {
+                    eprintln!("[timestamp] Failed to acquire lock: {}", e);
                     (None, 0)
                 }
             };
 
-            // Record timestamp
+            // Record timestamp (outside lock)
             if let Some(id) = task_id {
                 local_store.add_timestamp(id, elapsed);
                 println!("[timestamp] Recorded: task_id={}, elapsed={}s", id, elapsed);
@@ -452,8 +476,11 @@ pub fn spawn_timestamp_thread(app_handle: AppHandle) {
 /// Helper to read the current auth token
 fn get_token(app_handle: &AppHandle) -> Option<String> {
     let auth = app_handle.state::<AuthToken>();
-    auth.inner()
-        .lock()
-        .ok()
-        .and_then(|s| s.access_token.clone())
+    match auth.inner().lock_or_recover() {
+        Ok(s) => s.access_token.clone(),
+        Err(e) => {
+            eprintln!("[auth] Failed to get token: {}", e);
+            None
+        }
+    }
 }

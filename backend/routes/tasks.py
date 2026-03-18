@@ -12,8 +12,6 @@ from schemas import (
     TaskWithTotalTime,
     TimeEntryResponse,
     SyncTimeRequest,
-    CrashRecoveryRequest,
-    CrashRecoveryResponse,
 )
 from auth import get_current_user
 
@@ -252,65 +250,3 @@ def sync_time(
     db.refresh(task)
 
     return running
-
-
-@router.post("/crash-recovery", response_model=CrashRecoveryResponse)
-def crash_recovery(
-    request: CrashRecoveryRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Handle crash recovery for running time entries."""
-    task = db.query(Task).filter(
-        Task.id == request.task_id, Task.user_id == current_user.id
-    ).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    running = (
-        db.query(TimeEntry)
-        .filter(
-            TimeEntry.task_id == request.task_id,
-            TimeEntry.user_id == current_user.id,
-            TimeEntry.end_time.is_(None),
-        )
-        .first()
-    )
-
-    if not running:
-        return CrashRecoveryResponse(
-            success=True,
-            message="No running entry found for this task",
-            recovered_entry=None,
-        )
-
-    now = datetime.now(timezone.utc)
-    time_since_stop = now - request.client_last_stopped_at.replace(tzinfo=timezone.utc)
-
-    if time_since_stop > timedelta(minutes=15):
-        discarded_duration = int(time_since_stop.total_seconds())
-        logger.warning(
-            f"CRASH DETECTED: Task {request.task_id}, user {current_user.id}. "
-            f"Discarded {discarded_duration}s of untracked time. "
-            f"client_started={running.client_started_at}, client_last_stopped={request.client_last_stopped_at}"
-        )
-        running.end_time = request.client_last_stopped_at
-        running.client_stopped_at = request.client_last_stopped_at
-        running.duration = int(
-            (request.client_last_stopped_at - running.client_started_at).total_seconds()
-        ) if running.client_started_at else discarded_duration
-        running.is_synced = True
-        db.commit()
-        db.refresh(running)
-
-        return CrashRecoveryResponse(
-            success=True,
-            message="Recovered entry by closing it at last known good stop time",
-            recovered_entry=TimeEntryResponse.model_validate(running),
-        )
-
-    return CrashRecoveryResponse(
-        success=True,
-        message="Entry is still within acceptable range",
-        recovered_entry=TimeEntryResponse.model_validate(running),
-    )
