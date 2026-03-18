@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { useAuth } from "./AuthContext";
 
 interface IdleEvent {
@@ -35,6 +36,22 @@ function formatIdleDuration(secs: number): string {
   const remainMins = mins % 60;
   if (h > 0) return `${h}h ${remainMins}m`;
   return `${mins} minutes`;
+}
+
+// Show desktop notification
+async function showDesktopNotification(title: string, body: string) {
+  try {
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      const permission = await requestPermission();
+      granted = permission === "granted";
+    }
+    if (granted) {
+      sendNotification({ title, body });
+    }
+  } catch (e) {
+    console.error("Notification error:", e);
+  }
 }
 
 function App() {
@@ -154,18 +171,26 @@ function App() {
     const unlistenSync = listen<{ message?: string; syncing_seconds?: number; task_id?: number }>("sync-in-progress", (event) => {
       const msg = event.payload?.message || "Time sync in progress...";
       setSyncNotification(msg);
+      // Show desktop notification for sync in progress
+      if (event.payload?.syncing_seconds && event.payload.syncing_seconds > 0) {
+        showDesktopNotification("Timez Pro - Syncing", msg);
+      }
       setTimeout(() => setSyncNotification(null), 4000);
     });
 
     const unlistenSyncComplete = listen<{ message?: string; synced_seconds?: number; total_seconds?: number }>("sync-complete", (event) => {
       const msg = event.payload?.message || "Sync complete";
       setSyncNotification(msg);
+      // Show desktop notification for sync complete
+      showDesktopNotification("Timez Pro - Synced", msg);
       refreshTasks(); // Refresh tasks after successful sync
       setTimeout(() => setSyncNotification(null), 3000);
     });
 
     const unlistenSyncError = listen<{ error?: string }>("sync-error", (event) => {
-      setSyncNotification(`Sync failed: ${event.payload?.error || "Unknown error"}`);
+      const errorMsg = `Sync failed: ${event.payload?.error || "Unknown error"}`;
+      setSyncNotification(errorMsg);
+      showDesktopNotification("Timez Pro - Sync Error", errorMsg);
       setTimeout(() => setSyncNotification(null), 5000);
     });
 
