@@ -95,13 +95,22 @@ pub fn list_tasks(token: &Option<String>) -> Result<Vec<Task>, String> {
     Ok(tasks)
 }
 
+/// Response from sync_time API for handshake confirmation
+#[derive(Debug, Deserialize)]
+pub struct SyncTimeResponse {
+    pub id: i64,
+    pub task_id: i64,
+    pub duration: Option<i64>,
+    pub is_synced: bool,
+}
+
 pub fn sync_time(
     task_id: i64,
     elapsed_seconds: i64,
     client_started_at: &str,
     client_stopped_at: Option<&str>,
     token: &Option<String>,
-) -> Result<(), String> {
+) -> Result<SyncTimeResponse, String> {
     let mut req = ureq::post(&format!("{}/api/tasks/sync-time", BASE_URL));
     if let Some(header) = auth_header(token) {
         req = req.set("Authorization", &header);
@@ -113,9 +122,28 @@ pub fn sync_time(
         "client_started_at": client_started_at,
         "client_stopped_at": client_stopped_at
     });
-    req.send_json(body)
+    let resp = req.send_json(body)
         .map_err(|e| format!("API error: {}", e))?;
-    Ok(())
+
+    // Parse response for handshake confirmation
+    let sync_response: SyncTimeResponse = resp
+        .into_json()
+        .map_err(|e| format!("Failed to parse sync response: {}", e))?;
+
+    // Verify the backend received the correct data
+    if sync_response.task_id != task_id {
+        return Err(format!(
+            "Handshake failed: sent task_id={}, received task_id={}",
+            task_id, sync_response.task_id
+        ));
+    }
+
+    eprintln!(
+        "[api] Sync handshake confirmed: task_id={}, duration={:?}, is_synced={}",
+        sync_response.task_id, sync_response.duration, sync_response.is_synced
+    );
+
+    Ok(sync_response)
 }
 
 #[derive(Debug, Deserialize)]

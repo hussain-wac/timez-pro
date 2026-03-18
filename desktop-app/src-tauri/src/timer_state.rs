@@ -3,11 +3,25 @@ use std::time::Duration;
 
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 
 use crate::api;
 use crate::api::AuthToken;
 use crate::local_store::LocalTimeStorage;
 use crate::models::Task;
+
+/// Send a desktop notification
+fn send_notification(app_handle: &AppHandle, title: &str, body: &str) {
+    if let Err(e) = app_handle
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+    {
+        eprintln!("[notification] Failed to send: {}", e);
+    }
+}
 
 /// Format seconds into a human-readable string like "2 min 30 sec" or "1 hr 5 min"
 fn format_duration(secs: i64) -> String {
@@ -258,15 +272,11 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
                     );
 
                     if total_elapsed > 0 && new_time_to_sync > 0 {
-                        // Emit notification BEFORE syncing
-                        let _ = app_handle.emit(
-                            "sync-in-progress",
-                            serde_json::json!({
-                                "task_id": task_id,
-                                "syncing_seconds": new_time_to_sync,
-                                "total_seconds": total_elapsed,
-                                "message": format!("Syncing {} to backend", format_duration(new_time_to_sync))
-                            }),
+                        // Send desktop notification BEFORE syncing
+                        send_notification(
+                            &app_handle,
+                            "Timez Pro - Syncing",
+                            &format!("Syncing {} to server...", format_duration(new_time_to_sync))
                         );
 
                         let result = api::sync_time(
@@ -277,31 +287,45 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
                             &token,
                         );
 
-                        if let Err(e) = result {
-                            println!("[sync] Error syncing task {}: {}", task_id, e);
-                            let _ = app_handle.emit(
-                                "sync-error",
-                                serde_json::json!({
-                                    "task_id": task_id,
-                                    "error": e
-                                }),
-                            );
-                        } else {
-                            println!(
-                                "[sync] Synced {} seconds for task {} (new: {} seconds)",
-                                total_elapsed, task_id, new_time_to_sync
-                            );
-                            local_store.mark_synced(task_id, total_elapsed);
+                        match result {
+                            Err(e) => {
+                                println!("[sync] Error syncing task {}: {}", task_id, e);
+                                send_notification(
+                                    &app_handle,
+                                    "Timez Pro - Sync Failed",
+                                    &format!("Failed to sync time: {}", e)
+                                );
+                            }
+                            Ok(response) => {
+                                // Handshake confirmed - backend received the data
+                                println!(
+                                    "[sync] Handshake confirmed: task_id={}, backend_duration={:?}, is_synced={}",
+                                    response.task_id, response.duration, response.is_synced
+                                );
+                                println!(
+                                    "[sync] Synced {} seconds for task {} (new: {} seconds)",
+                                    total_elapsed, task_id, new_time_to_sync
+                                );
+                                local_store.mark_synced(task_id, total_elapsed);
 
-                            let _ = app_handle.emit(
-                                "sync-complete",
-                                serde_json::json!({
-                                    "task_id": task_id,
-                                    "synced_seconds": new_time_to_sync,
-                                    "total_seconds": total_elapsed,
-                                    "message": format!("{} synced successfully", format_duration(new_time_to_sync))
-                                }),
-                            );
+                                // Send success notification
+                                send_notification(
+                                    &app_handle,
+                                    "Timez Pro - Synced",
+                                    &format!("{} synced successfully", format_duration(new_time_to_sync))
+                                );
+
+                                // Also emit event for UI update
+                                let _ = app_handle.emit(
+                                    "sync-complete",
+                                    serde_json::json!({
+                                        "task_id": task_id,
+                                        "synced_seconds": new_time_to_sync,
+                                        "total_seconds": total_elapsed,
+                                        "backend_confirmed": response.is_synced
+                                    }),
+                                );
+                            }
                         }
                     }
                 }
