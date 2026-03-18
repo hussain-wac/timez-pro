@@ -185,6 +185,8 @@ def sync_time(
     current_user: User = Depends(get_current_user),
 ):
     """Upsert time entry with cumulative time. Stores client timestamps for crash recovery."""
+    logger.info(f"[sync-time] task_id={request.task_id}, elapsed={request.elapsed_seconds}, user={current_user.id}")
+
     task = db.query(Task).filter(
         Task.id == request.task_id, Task.user_id == current_user.id
     ).first()
@@ -202,6 +204,7 @@ def sync_time(
     )
 
     if running:
+        logger.info(f"[sync-time] Updating existing entry {running.id}, old_duration={running.duration}, new_duration={request.elapsed_seconds}")
         running.client_started_at = request.client_started_at
         running.client_stopped_at = request.client_stopped_at
         running.duration = request.elapsed_seconds
@@ -211,6 +214,7 @@ def sync_time(
         db.commit()
         db.refresh(running)
     else:
+        logger.info(f"[sync-time] Creating new entry for task {request.task_id}, duration={request.elapsed_seconds}")
         entry = TimeEntry(
             task_id=request.task_id,
             user_id=current_user.id,
@@ -225,6 +229,14 @@ def sync_time(
         db.commit()
         db.refresh(entry)
         running = entry
+
+    # Debug: check total for this task
+    total = (
+        db.query(func.coalesce(func.sum(TimeEntry.duration), 0))
+        .filter(TimeEntry.task_id == request.task_id, TimeEntry.duration.isnot(None))
+        .scalar()
+    ) or 0
+    logger.info(f"[sync-time] Task {request.task_id} now has total duration: {total} seconds")
 
     # Update task status and user's current task
     if request.client_stopped_at:

@@ -12,14 +12,30 @@ use crate::ServiceKind;
 
 /// Send a desktop notification
 fn send_notification(title: &str, body: &str) {
-    if let Err(e) = Notification::new()
+    println!("[notification] Attempting to send: {} - {}", title, body);
+
+    match Notification::new()
         .summary(title)
         .body(body)
         .appname("Timez Pro")
-        .timeout(4000)
+        .timeout(notify_rust::Timeout::Milliseconds(4000))
         .show()
     {
-        eprintln!("[notification] Failed to send: {}", e);
+        Ok(handle) => {
+            println!("[notification] Sent successfully: {:?}", handle);
+        }
+        Err(e) => {
+            eprintln!("[notification] Failed to send: {}", e);
+            // Try fallback using notify-send command
+            let _ = std::process::Command::new("notify-send")
+                .arg("-a")
+                .arg("Timez Pro")
+                .arg("-t")
+                .arg("4000")
+                .arg(title)
+                .arg(body)
+                .spawn();
+        }
     }
 }
 
