@@ -2,12 +2,35 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::Utc;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::api;
 use crate::api::AuthToken;
 use crate::local_store::LocalTimeStorage;
 use crate::models::Task;
+
+/// Format seconds into a human-readable string like "2 min 30 sec" or "1 hr 5 min"
+fn format_duration(secs: i64) -> String {
+    if secs < 60 {
+        format!("{} sec", secs)
+    } else if secs < 3600 {
+        let mins = secs / 60;
+        let remaining_secs = secs % 60;
+        if remaining_secs > 0 {
+            format!("{} min {} sec", mins, remaining_secs)
+        } else {
+            format!("{} min", mins)
+        }
+    } else {
+        let hrs = secs / 3600;
+        let mins = (secs % 3600) / 60;
+        if mins > 0 {
+            format!("{} hr {} min", hrs, mins)
+        } else {
+            format!("{} hr", hrs)
+        }
+    }
+}
 
 /// Local timer state that tracks everything without hitting the external API.
 /// The external API is only called every SYNC_INTERVAL for persistence.
@@ -215,10 +238,6 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
                 println!("[sync] Found {} unsynced entries", entries.len());
 
                 for entry in entries {
-                    if entry.synced {
-                        continue;
-                    }
-
                     let task_id = entry.task_id;
                     let client_started_at = entry.client_started_at.clone();
                     let client_stopped_at = entry.client_stopped_at.clone();
@@ -226,14 +245,30 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
                     // Get elapsed from the LAST timestamp (cumulative, not delta)
                     let total_elapsed: i64 =
                         entry.timestamps.last().map(|t| t.elapsed_secs).unwrap_or(0);
+
+                    // Calculate how much NEW time we're syncing
+                    let new_time_to_sync = total_elapsed - entry.last_synced_elapsed;
+
                     println!(
-                        "[sync] Task {} has {} timestamps, elapsed {} secs",
+                        "[sync] Task {} has {} timestamps, total {} secs, new {} secs",
                         task_id,
                         entry.timestamps.len(),
-                        total_elapsed
+                        total_elapsed,
+                        new_time_to_sync
                     );
 
-                    if total_elapsed > 0 {
+                    if total_elapsed > 0 && new_time_to_sync > 0 {
+                        // Emit notification BEFORE syncing
+                        let _ = app_handle.emit(
+                            "sync-in-progress",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "syncing_seconds": new_time_to_sync,
+                                "total_seconds": total_elapsed,
+                                "message": format!("Syncing {} to backend", format_duration(new_time_to_sync))
+                            }),
+                        );
+
                         let result = api::sync_time(
                             task_id,
                             total_elapsed,
@@ -244,23 +279,35 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
 
                         if let Err(e) = result {
                             println!("[sync] Error syncing task {}: {}", task_id, e);
+                            let _ = app_handle.emit(
+                                "sync-error",
+                                serde_json::json!({
+                                    "task_id": task_id,
+                                    "error": e
+                                }),
+                            );
                         } else {
                             println!(
-                                "[sync] Synced {} seconds for task {}",
-                                total_elapsed, task_id
+                                "[sync] Synced {} seconds for task {} (new: {} seconds)",
+                                total_elapsed, task_id, new_time_to_sync
                             );
-                            local_store.mark_synced(task_id);
+                            local_store.mark_synced(task_id, total_elapsed);
 
                             let _ = app_handle.emit(
                                 "sync-complete",
                                 serde_json::json!({
                                     "task_id": task_id,
-                                    "elapsed": total_elapsed
+                                    "synced_seconds": new_time_to_sync,
+                                    "total_seconds": total_elapsed,
+                                    "message": format!("{} synced successfully", format_duration(new_time_to_sync))
                                 }),
                             );
                         }
                     }
                 }
+
+                // Clean up completed entries
+                local_store.cleanup_completed_entries();
 
                 s.sync_from_api(&token);
                 println!("[sync] Sync complete");
@@ -298,13 +345,20 @@ pub fn crash_recovery_on_startup(app_handle: &AppHandle) {
                     .map(|t| t.timestamp.clone())
                     .unwrap_or_else(|| entry.client_started_at.clone());
 
+                // Get the last recorded elapsed time for recovery
+                let last_elapsed = entry
+                    .timestamps
+                    .last()
+                    .map(|t| t.elapsed_secs)
+                    .unwrap_or(0);
+
                 if let Some(ref tok) = token {
                     match api::crash_recovery(task_id, &recovery_timestamp, &Some(tok.clone())) {
                         Ok(_) => {
                             println!(
                                 "[crash-recovery] Successfully recovered, stale time discarded"
                             );
-                            local_store.mark_synced(task_id);
+                            local_store.mark_synced(task_id, last_elapsed);
 
                             let _ = app_handle.emit(
                                 "crash-recovery-complete",

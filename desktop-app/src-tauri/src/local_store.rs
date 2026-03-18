@@ -15,7 +15,8 @@ pub struct LocalTimeEntry {
     pub client_started_at: String,
     pub client_stopped_at: Option<String>,
     pub synced: bool,
-    pub timestamps: Vec<TimeStamp>,  // Array of timestamps every 5 seconds
+    pub last_synced_elapsed: i64,  // Track what was last synced to avoid re-syncing same data
+    pub timestamps: Vec<TimeStamp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -63,40 +64,46 @@ impl LocalTimeStorage {
 
     pub fn start_timer(&self, task_id: i64, started_at: String) {
         if let Ok(mut store) = self.inner.lock() {
+            // Check if there's an existing entry for this task (synced or not)
             if let Some(entry) = store
                 .entries
                 .iter_mut()
-                .find(|e| e.task_id == task_id && !e.synced)
+                .find(|e| e.task_id == task_id && e.client_stopped_at.is_none())
             {
+                // Reuse existing running entry
                 entry.client_started_at = started_at;
-                entry.client_stopped_at = None;
-                entry.timestamps.clear();
+                entry.synced = false;
             } else {
+                // Create new entry
                 store.entries.push(LocalTimeEntry {
                     task_id,
                     client_started_at: started_at,
                     client_stopped_at: None,
                     synced: false,
+                    last_synced_elapsed: 0,
                     timestamps: vec![],
                 });
             }
+            store.was_running = true;
+            store.last_running_task_id = Some(task_id);
         }
         self.save();
     }
 
     pub fn add_timestamp(&self, task_id: i64, elapsed_secs: i64) {
         if let Ok(mut store) = self.inner.lock() {
+            // Find entry for this task that is still running (no client_stopped_at)
             if let Some(entry) = store
                 .entries
                 .iter_mut()
-                .find(|e| e.task_id == task_id && !e.synced)
+                .find(|e| e.task_id == task_id && e.client_stopped_at.is_none())
             {
                 entry.timestamps.push(TimeStamp {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     elapsed_secs,
                 });
-                // Keep only last 100 timestamps to avoid growing too large
-                if entry.timestamps.len() > 100 {
+                // Keep only last 200 timestamps (increased from 100)
+                if entry.timestamps.len() > 200 {
                     entry.timestamps.remove(0);
                 }
             }
@@ -109,52 +116,57 @@ impl LocalTimeStorage {
             if let Some(entry) = store
                 .entries
                 .iter_mut()
-                .find(|e| e.task_id == task_id && !e.synced)
+                .find(|e| e.task_id == task_id && e.client_stopped_at.is_none())
             {
                 entry.client_stopped_at = Some(stopped_at);
+                entry.synced = false; // Mark as needing sync
+            }
+            store.was_running = false;
+        }
+        self.save();
+    }
+
+    /// Mark entry as synced and record the elapsed time that was synced.
+    /// For stopped entries, remove them. For running entries, keep them but update last_synced_elapsed.
+    pub fn mark_synced(&self, task_id: i64, synced_elapsed: i64) {
+        if let Ok(mut store) = self.inner.lock() {
+            if let Some(entry) = store
+                .entries
+                .iter_mut()
+                .find(|e| e.task_id == task_id)
+            {
+                if entry.client_stopped_at.is_some() {
+                    // Timer was stopped - mark as fully synced
+                    entry.synced = true;
+                    entry.last_synced_elapsed = synced_elapsed;
+                } else {
+                    // Timer still running - update last synced but keep entry active
+                    entry.last_synced_elapsed = synced_elapsed;
+                    entry.synced = false; // Keep as unsynced so we continue syncing
+                }
+            }
+            // Only clear running state if the timer was actually stopped
+            if store.entries.iter().any(|e| e.task_id == task_id && e.client_stopped_at.is_some()) {
+                store.was_running = false;
+                store.last_running_task_id = None;
             }
         }
         self.save();
     }
 
-    pub fn mark_synced(&self, task_id: i64) {
+    /// Clean up old synced entries that are completed (stopped and synced)
+    pub fn cleanup_completed_entries(&self) {
         if let Ok(mut store) = self.inner.lock() {
-            store.entries.retain(|e| e.task_id != task_id || e.synced);
-            if let Some(entry) = store
-                .entries
-                .iter_mut()
-                .find(|e| e.task_id == task_id && !e.synced)
-            {
-                entry.synced = true;
-            }
-            store.was_running = false;
-            store.last_running_task_id = None;
+            store.entries.retain(|e| {
+                // Keep if: not synced OR still running (no stopped_at)
+                !e.synced || e.client_stopped_at.is_none()
+            });
         }
         self.save();
     }
 
     pub fn set_running(&self, task_id: i64, started_at: String) {
-        if let Ok(mut store) = self.inner.lock() {
-            store.was_running = true;
-            store.last_running_task_id = Some(task_id);
-            // Also add/update the entry
-            if let Some(entry) = store
-                .entries
-                .iter_mut()
-                .find(|e| e.task_id == task_id && !e.synced)
-            {
-                entry.client_started_at = started_at;
-                entry.client_stopped_at = None;
-            } else {
-                store.entries.push(LocalTimeEntry {
-                    task_id,
-                    client_started_at: started_at,
-                    client_stopped_at: None,
-                    synced: false,
-                });
-            }
-        }
-        self.save();
+        self.start_timer(task_id, started_at);
     }
 
     pub fn set_stopped(&self, task_id: i64) {
@@ -163,9 +175,10 @@ impl LocalTimeStorage {
             if let Some(entry) = store
                 .entries
                 .iter_mut()
-                .find(|e| e.task_id == task_id && !e.synced)
+                .find(|e| e.task_id == task_id && e.client_stopped_at.is_none())
             {
                 entry.client_stopped_at = Some(chrono::Utc::now().to_rfc3339());
+                entry.synced = false;
             }
         }
         self.save();
@@ -216,21 +229,31 @@ impl LocalTimeStorage {
         }
         self.save();
     }
-}
-        self.save();
-    }
 
-    pub fn get_unsynced_entries(&self) -> Vec<LocalTimeEntry> {
+    /// Get entries that need syncing (have new elapsed time since last sync)
+    pub fn get_entries_to_sync(&self) -> Vec<LocalTimeEntry> {
         if let Ok(store) = self.inner.lock() {
             store
                 .entries
                 .iter()
-                .filter(|e| !e.synced)
+                .filter(|e| {
+                    // Include if: has timestamps AND (not synced OR has new time to sync)
+                    if e.timestamps.is_empty() {
+                        return false;
+                    }
+                    let current_elapsed = e.timestamps.last().map(|t| t.elapsed_secs).unwrap_or(0);
+                    // Sync if we have more time than last synced OR if timer was stopped
+                    current_elapsed > e.last_synced_elapsed || e.client_stopped_at.is_some()
+                })
                 .cloned()
                 .collect()
         } else {
             vec![]
         }
+    }
+
+    pub fn get_unsynced_entries(&self) -> Vec<LocalTimeEntry> {
+        self.get_entries_to_sync()
     }
 
     pub fn get_last_running_entry(&self) -> Option<LocalTimeEntry> {
@@ -251,13 +274,11 @@ impl LocalTimeStorage {
             store
                 .entries
                 .iter()
-                .find(|e| e.task_id == task_id && !e.synced)
+                .find(|e| e.task_id == task_id && e.client_stopped_at.is_none())
                 .cloned()
         } else {
             None
         }
-    }
-}
     }
 
     pub fn update_last_sync(&self) {

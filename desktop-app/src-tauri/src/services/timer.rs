@@ -2,12 +2,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::models::Task;
 use crate::services::api;
 use crate::services::api::AuthToken;
 use crate::services::storage::LocalTimeStorage;
+
+const SYNC_INTERVAL_SECS: u64 = 30; // Sync every 30 seconds
 
 pub struct TimerStateInner {
     pub cached_tasks: Vec<Task>,
@@ -154,6 +156,29 @@ fn get_token(app_handle: &AppHandle) -> Option<String> {
     auth.lock().ok().and_then(|s| s.access_token.clone())
 }
 
+/// Format seconds into a human-readable string like "2 min 30 sec" or "1 hr 5 min"
+fn format_duration(secs: i64) -> String {
+    if secs < 60 {
+        format!("{} sec", secs)
+    } else if secs < 3600 {
+        let mins = secs / 60;
+        let remaining_secs = secs % 60;
+        if remaining_secs > 0 {
+            format!("{} min {} sec", mins, remaining_secs)
+        } else {
+            format!("{} min", mins)
+        }
+    } else {
+        let hrs = secs / 3600;
+        let mins = (secs % 3600) / 60;
+        if mins > 0 {
+            format!("{} hr {} min", hrs, mins)
+        } else {
+            format!("{} hr", hrs)
+        }
+    }
+}
+
 pub fn spawn_sync_thread(app_handle: AppHandle, timer_state: TimerState) {
     std::thread::spawn(move || {
         // Initial sync
@@ -169,7 +194,7 @@ pub fn spawn_sync_thread(app_handle: AppHandle, timer_state: TimerState) {
         }
 
         loop {
-            std::thread::sleep(Duration::from_secs(60));
+            std::thread::sleep(Duration::from_secs(SYNC_INTERVAL_SECS));
 
             let token = get_token(&app_handle);
             let local_store = app_handle.state::<LocalTimeStorage>();
@@ -185,30 +210,35 @@ pub fn spawn_sync_thread(app_handle: AppHandle, timer_state: TimerState) {
                 }
             }
 
-            let _ = app_handle.emit("sync-in-progress", ());
-
             if let Ok(mut s) = timer_state.lock() {
                 eprintln!("[sync] Syncing with API...");
 
-                let entries = local_store.get_unsynced_entries();
-                eprintln!("[sync] Found {} unsynced entries", entries.len());
+                let entries = local_store.get_entries_to_sync();
+                eprintln!("[sync] Found {} entries to sync", entries.len());
 
                 for entry in entries {
-                    if entry.synced {
-                        continue;
-                    }
-
                     let task_id = entry.task_id;
                     let client_started_at = entry.client_started_at.clone();
                     let client_stopped_at = entry.client_stopped_at.clone();
-                    // Get elapsed from the LAST timestamp (cumulative, not delta)
-                    let total_elapsed: i64 =
-                        entry.timestamps.last().map(|t| t.elapsed_secs).unwrap_or(0);
 
-                    if total_elapsed > 0 {
+                    // Get the current elapsed time from the LAST timestamp
+                    let current_elapsed: i64 = entry.timestamps.last().map(|t| t.elapsed_secs).unwrap_or(0);
+
+                    // Calculate how much NEW time we're syncing
+                    let new_time_to_sync = current_elapsed - entry.last_synced_elapsed;
+
+                    if current_elapsed > 0 && new_time_to_sync > 0 {
+                        // Emit notification BEFORE syncing so user sees it
+                        let _ = app_handle.emit("sync-in-progress", serde_json::json!({
+                            "task_id": task_id,
+                            "syncing_seconds": new_time_to_sync,
+                            "total_seconds": current_elapsed,
+                            "message": format!("Syncing {} to backend", format_duration(new_time_to_sync))
+                        }));
+
                         let result = api::sync_time(
                             task_id,
-                            total_elapsed,
+                            current_elapsed,
                             &client_started_at,
                             client_stopped_at.as_deref(),
                             &token,
@@ -216,16 +246,33 @@ pub fn spawn_sync_thread(app_handle: AppHandle, timer_state: TimerState) {
 
                         if let Err(e) = result {
                             eprintln!("[sync] Error syncing task {}: {}", task_id, e);
+                            let _ = app_handle.emit("sync-error", serde_json::json!({
+                                "task_id": task_id,
+                                "error": e
+                            }));
                         } else {
                             eprintln!(
-                                "[sync] Synced {} seconds for task {}",
-                                total_elapsed, task_id
+                                "[sync] Synced {} seconds for task {} (new: {} seconds)",
+                                current_elapsed, task_id, new_time_to_sync
                             );
-                            local_store.mark_synced(task_id);
+
+                            // Mark as synced with the current elapsed time
+                            local_store.mark_synced(task_id, current_elapsed);
+
+                            let _ = app_handle.emit("sync-complete", serde_json::json!({
+                                "task_id": task_id,
+                                "synced_seconds": new_time_to_sync,
+                                "total_seconds": current_elapsed,
+                                "message": format!("{} synced successfully", format_duration(new_time_to_sync))
+                            }));
                         }
                     }
                 }
 
+                // Clean up completed entries periodically
+                local_store.cleanup_completed_entries();
+
+                // Refresh tasks from API
                 s.sync_from_api(&token);
                 eprintln!("[sync] Sync complete");
             }

@@ -151,9 +151,22 @@ function App() {
       setCrashRecoveryOpen(true);
     });
 
-    const unlistenSync = listen("sync-in-progress", () => {
-      setSyncNotification("Time sync in progress...");
+    const unlistenSync = listen<{ message?: string; syncing_seconds?: number; task_id?: number }>("sync-in-progress", (event) => {
+      const msg = event.payload?.message || "Time sync in progress...";
+      setSyncNotification(msg);
+      setTimeout(() => setSyncNotification(null), 4000);
+    });
+
+    const unlistenSyncComplete = listen<{ message?: string; synced_seconds?: number; total_seconds?: number }>("sync-complete", (event) => {
+      const msg = event.payload?.message || "Sync complete";
+      setSyncNotification(msg);
+      refreshTasks(); // Refresh tasks after successful sync
       setTimeout(() => setSyncNotification(null), 3000);
+    });
+
+    const unlistenSyncError = listen<{ error?: string }>("sync-error", (event) => {
+      setSyncNotification(`Sync failed: ${event.payload?.error || "Unknown error"}`);
+      setTimeout(() => setSyncNotification(null), 5000);
     });
 
     const unlistenMidnight = listen("midnight-reset", () => {
@@ -169,6 +182,8 @@ function App() {
       unlisten5.then((fn) => fn());
       unlisten6.then((fn) => fn());
       unlistenSync.then((fn) => fn());
+      unlistenSyncComplete.then((fn) => fn());
+      unlistenSyncError.then((fn) => fn());
       unlistenMidnight.then((fn) => fn());
     };
   }, [refreshTasks]);

@@ -45,7 +45,7 @@ pub fn quit_app(app_handle: AppHandle) -> Result<(), String> {
                 client_stopped_at.as_deref(),
                 &token,
             );
-            local_store.mark_synced(task_id);
+            local_store.mark_synced(task_id, total_elapsed);
             eprintln!(
                 "[quit] Synced {} seconds for task {}",
                 total_elapsed, task_id
