@@ -1,0 +1,216 @@
+{
+	"info": {
+		"_postman_id": "time-tracker-api-collection",
+		"name": "Time Tracker API",
+		"description": "A time-tracking application API similar to Hubstaff",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "task_id",
+			"value": "1",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Tasks",
+			"item": [
+				{
+					"name": "List All Tasks",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/tasks",
+							"host": ["{{base_url}}"],
+							"path": ["api", "tasks"]
+						},
+						"description": "Get a list of all tasks"
+					},
+					"response": []
+				},
+				{
+					"name": "Create Task",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Feature Development\",\n    \"max_hours\": 8\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/tasks",
+							"host": ["{{base_url}}"],
+							"path": ["api", "tasks"]
+						},
+						"description": "Create a new task with name and maximum working hours"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Task by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/tasks/{{task_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["api", "tasks", "{{task_id}}"]
+						},
+						"description": "Get a single task with its total tracked time and remaining seconds"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Task",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/tasks/{{task_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["api", "tasks", "{{task_id}}"]
+						},
+						"description": "Delete a task and all its time entries"
+					},
+					"response": []
+				},
+				{
+					"name": "List Task Time Entries",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/tasks/{{task_id}}/entries",
+							"host": ["{{base_url}}"],
+							"path": ["api", "tasks", "{{task_id}}", "entries"]
+						},
+						"description": "Get all time entries for a specific task"
+					},
+					"response": []
+				}
+			],
+			"description": "Task CRUD operations"
+		},
+		{
+			"name": "Timer",
+			"item": [
+				{
+					"name": "Start Timer",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/tasks/{{task_id}}/start",
+							"host": ["{{base_url}}"],
+							"path": ["api", "tasks", "{{task_id}}", "start"]
+						},
+						"description": "Start timer for a task. Auto-stops any other running timer. Fails if task has reached max hours."
+					},
+					"response": []
+				},
+				{
+					"name": "Stop Timer",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/tasks/{{task_id}}/stop",
+							"host": ["{{base_url}}"],
+							"path": ["api", "tasks", "{{task_id}}", "stop"]
+						},
+						"description": "Stop the running timer for a specific task"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Timer Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/status",
+							"host": ["{{base_url}}"],
+							"path": ["api", "status"]
+						},
+						"description": "Get the currently running task with elapsed seconds"
+					},
+					"response": []
+				}
+			],
+			"description": "Timer start/stop/status operations"
+		},
+		{
+			"name": "Reports",
+			"item": [
+				{
+					"name": "Daily Report",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/report/daily?date=2024-01-15",
+							"host": ["{{base_url}}"],
+							"path": ["api", "report", "daily"],
+							"query": [
+								{
+									"key": "date",
+									"value": "2024-01-15",
+									"description": "Date in YYYY-MM-DD format"
+								}
+							]
+						},
+						"description": "Get total time per task for a given day"
+					},
+					"response": []
+				},
+				{
+					"name": "Summary Report",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/report/summary",
+							"host": ["{{base_url}}"],
+							"path": ["api", "report", "summary"]
+						},
+						"description": "Get total time per task (all time)"
+					},
+					"response": []
+				}
+			],
+			"description": "Reporting endpoints"
+		},
+		{
+			"name": "Health",
+			"item": [
+				{
+					"name": "Root",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/",
+							"host": ["{{base_url}}"],
+							"path": [""]
+						},
+						"description": "API root endpoint"
+					},
+					"response": []
+				}
+			],
+			"description": "Health check endpoints"
+		}
+	]
+}
