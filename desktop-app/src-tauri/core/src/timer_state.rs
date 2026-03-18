@@ -22,6 +22,8 @@ pub struct TimerStateInner {
     pub last_sync_at: chrono::DateTime<Utc>,
     /// Elapsed seconds accumulated before current run (from API summary)
     pub base_elapsed: std::collections::HashMap<i64, i64>,
+    /// Total elapsed sent to backend in last sync (to avoid double-counting)
+    pub last_synced_elapsed: std::collections::HashMap<i64, i64>,
 }
 
 pub type TimerState = Mutex<TimerStateInner>;
@@ -37,7 +39,38 @@ impl TimerStateInner {
             last_task_id: None,
             last_sync_at: chrono::DateTime::<Utc>::MIN_UTC,
             base_elapsed: std::collections::HashMap::new(),
+            last_synced_elapsed: std::collections::HashMap::new(),
         }
+    }
+
+    /// Get total elapsed for a running task (base + live)
+    pub fn get_total_elapsed(&self, task_id: i64) -> i64 {
+        let base = self.base_elapsed.get(&task_id).copied().unwrap_or(0);
+        let live = if self.running_task_id == Some(task_id) {
+            self.timer_started_at
+                .map(|started| (Utc::now() - started).num_seconds().max(0))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        base + live
+    }
+
+    /// Called after successful sync - updates base and resets timer
+    pub fn mark_synced(&mut self, task_id: i64, synced_elapsed: i64) {
+        // Update base_elapsed to include the synced time
+        self.base_elapsed.insert(task_id, synced_elapsed);
+        self.last_synced_elapsed.insert(task_id, synced_elapsed);
+
+        // Reset timer_started_at to NOW so live_elapsed starts from 0
+        if self.running_task_id == Some(task_id) {
+            self.timer_started_at = Some(Utc::now());
+        }
+
+        println!(
+            "[timer] Marked synced: task_id={}, synced_elapsed={}, timer reset",
+            task_id, synced_elapsed
+        );
     }
 
     /// Get tasks with locally computed elapsed time
@@ -73,16 +106,14 @@ impl TimerStateInner {
     /// Sync cached data from the external API
     pub fn sync_from_api(&mut self, token: &Option<String>) {
         if let Ok(tasks) = api::list_tasks(token) {
-            // Rebuild base elapsed from API to avoid stale entries
-            let mut base_elapsed = std::collections::HashMap::with_capacity(tasks.len());
+            // Update base_elapsed for non-running tasks only
+            // Running task's base_elapsed is managed by mark_synced()
             for t in &tasks {
-                base_elapsed.insert(t.id, t.elapsed_secs);
+                if self.running_task_id != Some(t.id) {
+                    self.base_elapsed.insert(t.id, t.elapsed_secs);
+                }
             }
 
-            // Don't auto-start timer - user must manually start
-            // Running state is tracked locally
-
-            self.base_elapsed = base_elapsed;
             self.cached_tasks = tasks
                 .into_iter()
                 .map(|t| Task {
