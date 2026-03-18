@@ -3,25 +3,11 @@ use std::time::Duration;
 
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::api;
 use crate::api::AuthToken;
 use crate::local_store::LocalTimeStorage;
 use crate::models::Task;
-
-/// Send a desktop notification
-fn send_notification(app_handle: &AppHandle, title: &str, body: &str) {
-    if let Err(e) = app_handle
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-    {
-        eprintln!("[notification] Failed to send: {}", e);
-    }
-}
 
 /// Format seconds into a human-readable string like "2 min 30 sec" or "1 hr 5 min"
 fn format_duration(secs: i64) -> String {
@@ -69,23 +55,35 @@ pub type TimerState = Mutex<TimerStateInner>;
 
 const SYNC_INTERVAL_SECS: u64 = 30; // 30 seconds
 
-/// Helper trait to recover from poisoned mutex
+/// Helper trait to recover from poisoned mutex.
+///
+/// When a thread panics while holding a mutex, the mutex becomes "poisoned".
+/// This trait provides a way to recover by clearing the poison and accessing
+/// the data anyway. This is safe because the data itself is still valid;
+/// the poison is just a warning that a panic occurred.
 trait RecoverableMutex<T> {
+    /// Attempts to lock the mutex, recovering from poison if necessary.
+    ///
+    /// If the mutex is poisoned, logs the error, clears the poison, and
+    /// returns the guard with potentially inconsistent data.
     fn lock_or_recover(&self) -> Result<std::sync::MutexGuard<'_, T>, String>;
 }
 
 impl<T> RecoverableMutex<T> for Mutex<T> {
     fn lock_or_recover(&self) -> Result<std::sync::MutexGuard<'_, T>, String> {
-        self.lock().map_err(|e: PoisonError<_>| {
-            eprintln!("[CRITICAL] Mutex poisoned, recovering: {}", e);
-            // In a real app, you might want to clear the poison and recover
-            // For now, we'll return the error but still try to use the data
-            format!("Mutex poisoned: {}", e)
-        }).or_else(|_| {
-            // Try to recover by clearing the poison
-            self.clear_poison();
-            self.lock().map_err(|e| format!("Failed to recover mutex: {}", e))
-        })
+        match self.lock() {
+            Ok(guard) => Ok(guard),
+            Err(poison_error) => {
+                eprintln!(
+                    "[CRITICAL] Mutex poisoned, recovering: {}",
+                    poison_error
+                );
+                // Clear the poison flag so future lock attempts succeed
+                self.clear_poison();
+                // Extract the guard from the poison error - the data is still valid
+                Ok(poison_error.into_inner())
+            }
+        }
     }
 }
 
@@ -337,7 +335,9 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
             }
 
             // Emit sync notification
-            let _ = app_handle.emit("sync-in-progress", ());
+            let _ = app_handle.emit("sync-in-progress", serde_json::json!({
+                "message": "Checking for time to sync..."
+            }));
 
             // Get unsynced entries OUTSIDE the lock
             let entries = local_store.get_unsynced_entries();
@@ -365,12 +365,13 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
                 );
 
                 if total_elapsed > 0 && new_time_to_sync > 0 {
-                    // Send desktop notification BEFORE syncing
-                    send_notification(
-                        &app_handle,
-                        "Timez Pro - Syncing",
-                        &format!("Syncing {} to server...", format_duration(new_time_to_sync))
-                    );
+                    // Emit event for frontend notification
+                    let sync_msg = format!("Syncing {} to server...", format_duration(new_time_to_sync));
+                    let _ = app_handle.emit("sync-in-progress", serde_json::json!({
+                        "message": sync_msg,
+                        "syncing_seconds": new_time_to_sync,
+                        "task_id": task_id
+                    }));
 
                     // Network I/O happens OUTSIDE mutex lock
                     let result = api::sync_time(
@@ -384,11 +385,10 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
                     match result {
                         Err(e) => {
                             println!("[sync] Error syncing task {}: {}", task_id, e);
-                            send_notification(
-                                &app_handle,
-                                "Timez Pro - Sync Failed",
-                                &format!("Failed to sync time: {}", e)
-                            );
+                            let _ = app_handle.emit("sync-error", serde_json::json!({
+                                "error": format!("{}", e),
+                                "task_id": task_id
+                            }));
                         }
                         Ok(response) => {
                             // Handshake confirmed - backend received the data
@@ -402,17 +402,12 @@ pub fn spawn_sync_thread(app_handle: AppHandle) {
                             );
                             local_store.mark_synced(task_id, total_elapsed);
 
-                            // Send success notification
-                            send_notification(
-                                &app_handle,
-                                "Timez Pro - Synced",
-                                &format!("{} synced successfully", format_duration(new_time_to_sync))
-                            );
-
-                            // Also emit event for UI update
+                            // Emit event for UI update and frontend notification
+                            let success_msg = format!("{} synced successfully", format_duration(new_time_to_sync));
                             let _ = app_handle.emit(
                                 "sync-complete",
                                 serde_json::json!({
+                                    "message": success_msg,
                                     "task_id": task_id,
                                     "synced_seconds": new_time_to_sync,
                                     "total_seconds": total_elapsed,

@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
+use timez_core::constants::{ACTIVE_THRESHOLD_SECS, DEFAULT_IDLE_THRESHOLD_SECS, POLL_INTERVAL_SECS};
 use timez_core::models::{IdleEvent, Task};
 use timez_core::protocol::{Request, ResponseData};
 
@@ -43,7 +44,11 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
             }
         };
 
-        eprintln!("[idle-time] Idle monitor started (cross-platform)");
+        eprintln!(
+            "[idle-time] Idle monitor started (threshold={}s, poll={}s)",
+            DEFAULT_IDLE_THRESHOLD_SECS,
+            POLL_INTERVAL_SECS
+        );
 
         let mut is_idle = false;
         let mut idle_started_at: Option<chrono::DateTime<Utc>> = None;
@@ -52,7 +57,7 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
         let mut last_successful_check = std::time::Instant::now();
 
         loop {
-            std::thread::sleep(Duration::from_secs(2));
+            std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
 
             // Check if session is locked
             let is_locked = detector.is_locked();
@@ -71,11 +76,11 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
                         time_since_last_check
                     );
                     // Use time since last successful check as idle time
-                    time_since_last_check.max(60)
+                    time_since_last_check.max(DEFAULT_IDLE_THRESHOLD_SECS)
                 }
             };
 
-            let user_is_active = system_idle_secs < 3 && !is_locked;
+            let user_is_active = system_idle_secs < ACTIVE_THRESHOLD_SECS && !is_locked;
 
             // Log lock state changes
             if is_locked && !was_locked {
@@ -113,7 +118,7 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
             }
 
             // User became idle (or session locked)
-            if !is_idle && (system_idle_secs >= 60 || is_locked) {
+            if !is_idle && (system_idle_secs >= DEFAULT_IDLE_THRESHOLD_SECS || is_locked) {
                 let running_task = current_running_task();
                 if let Some(task) = running_task {
                     eprintln!(

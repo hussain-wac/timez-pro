@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::Utc;
+use timez_core::constants::{ACTIVE_THRESHOLD_SECS, POLL_INTERVAL_SECS};
 use timez_core::models::ActivityStats;
 use timez_core::protocol::{Request, ResponseData};
 
@@ -9,7 +9,7 @@ use crate::idle_detection;
 use crate::runtime;
 use crate::ServiceKind;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct TrackerState {
     active_secs: i64,
     idle_secs: i64,
@@ -57,8 +57,14 @@ fn spawn_tracker(state: Arc<Mutex<TrackerState>>) {
             }
         };
 
+        eprintln!(
+            "[tracker] Activity tracker started (poll={}s, active_threshold={}s)",
+            POLL_INTERVAL_SECS,
+            ACTIVE_THRESHOLD_SECS
+        );
+
         loop {
-            std::thread::sleep(Duration::from_secs(2));
+            std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
 
             let is_locked = idle_detection::is_session_locked(&conn);
             let idle_secs = match idle_detection::get_idle_duration_secs(&conn) {
@@ -69,18 +75,22 @@ fn spawn_tracker(state: Arc<Mutex<TrackerState>>) {
                 }
             };
 
-            let user_is_idle = idle_secs >= 3 || is_locked;
+            let user_is_idle = idle_secs >= ACTIVE_THRESHOLD_SECS || is_locked;
 
-            let _now = Utc::now();
+            // Use match with explicit poison handling
             let mut tracker = match state.lock() {
-                Ok(tracker) => tracker,
-                Err(_) => continue,
+                Ok(guard) => guard,
+                Err(poison_err) => {
+                    eprintln!("[tracker] Mutex poisoned, recovering");
+                    poison_err.into_inner()
+                }
             };
 
+            let increment = POLL_INTERVAL_SECS as i64;
             if user_is_idle {
-                tracker.idle_secs += 2;
+                tracker.idle_secs += increment;
             } else {
-                tracker.active_secs += 2;
+                tracker.active_secs += increment;
             }
         }
     });

@@ -3,20 +3,50 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+/// Maximum number of timestamps to retain per entry.
+/// This prevents unbounded memory growth for long-running timers.
+const MAX_TIMESTAMPS_PER_ENTRY: usize = 200;
+
+/// Represents a single timestamp recording for crash recovery.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TimeStamp {
     pub timestamp: String,
     pub elapsed_secs: i64,
 }
 
+/// A local time entry that may or may not be synced to the server.
+///
+/// This struct supports offline operation by storing time entries locally
+/// and syncing them when connectivity is available.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LocalTimeEntry {
     pub task_id: i64,
     pub client_started_at: String,
     pub client_stopped_at: Option<String>,
     pub synced: bool,
-    pub last_synced_elapsed: i64,  // Track what was last synced to avoid re-syncing same data
+    /// Track what was last synced to avoid re-syncing same data
+    pub last_synced_elapsed: i64,
     pub timestamps: Vec<TimeStamp>,
+}
+
+impl LocalTimeEntry {
+    /// Returns `true` if this entry has unsynced time.
+    #[must_use]
+    #[inline]
+    pub fn has_unsynced_time(&self) -> bool {
+        if self.timestamps.is_empty() {
+            return false;
+        }
+        let current_elapsed = self.timestamps.last().map_or(0, |t| t.elapsed_secs);
+        current_elapsed > self.last_synced_elapsed || self.client_stopped_at.is_some()
+    }
+
+    /// Returns `true` if the timer is still running (not stopped).
+    #[must_use]
+    #[inline]
+    pub fn is_running(&self) -> bool {
+        self.client_stopped_at.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -102,8 +132,8 @@ impl LocalTimeStorage {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     elapsed_secs,
                 });
-                // Keep only last 200 timestamps (increased from 100)
-                if entry.timestamps.len() > 200 {
+                // Keep only last N timestamps to prevent unbounded growth
+                if entry.timestamps.len() > MAX_TIMESTAMPS_PER_ENTRY {
                     entry.timestamps.remove(0);
                 }
             }
@@ -230,28 +260,36 @@ impl LocalTimeStorage {
         self.save();
     }
 
-    /// Get entries that need syncing (have new elapsed time since last sync)
+    /// Get entries that need syncing (have new elapsed time since last sync).
+    ///
+    /// Returns entries that either:
+    /// - Have more elapsed time than was last synced
+    /// - Have been stopped but not yet synced
+    #[must_use]
     pub fn get_entries_to_sync(&self) -> Vec<LocalTimeEntry> {
-        if let Ok(store) = self.inner.lock() {
-            store
+        match self.inner.lock() {
+            Ok(store) => store
                 .entries
                 .iter()
-                .filter(|e| {
-                    // Include if: has timestamps AND (not synced OR has new time to sync)
-                    if e.timestamps.is_empty() {
-                        return false;
-                    }
-                    let current_elapsed = e.timestamps.last().map(|t| t.elapsed_secs).unwrap_or(0);
-                    // Sync if we have more time than last synced OR if timer was stopped
-                    current_elapsed > e.last_synced_elapsed || e.client_stopped_at.is_some()
-                })
+                .filter(|e| e.has_unsynced_time())
                 .cloned()
-                .collect()
-        } else {
-            vec![]
+                .collect(),
+            Err(poison_err) => {
+                eprintln!("[local_store] Mutex poisoned in get_entries_to_sync, recovering");
+                poison_err
+                    .into_inner()
+                    .entries
+                    .iter()
+                    .filter(|e| e.has_unsynced_time())
+                    .cloned()
+                    .collect()
+            }
         }
     }
 
+    /// Alias for `get_entries_to_sync` for backward compatibility.
+    #[must_use]
+    #[inline]
     pub fn get_unsynced_entries(&self) -> Vec<LocalTimeEntry> {
         self.get_entries_to_sync()
     }

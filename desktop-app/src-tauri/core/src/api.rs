@@ -8,16 +8,43 @@ use serde::Deserialize;
 
 const BASE_URL: &str = "http://192.168.3.163:8000";
 
-/// Shared auth token state
+/// Shared auth token state.
+///
+/// This struct is designed to be wrapped in a `Mutex` for thread-safe access.
+/// The access token is stored as an `Option` to represent logged-out state.
+#[derive(Debug, Clone)]
 pub struct AuthTokenState {
     pub access_token: Option<String>,
 }
 
 pub type AuthToken = Mutex<AuthTokenState>;
 
+impl Default for AuthTokenState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuthTokenState {
+    /// Creates a new `AuthTokenState` with no token (logged out).
+    #[must_use]
     pub fn new() -> Self {
         Self { access_token: None }
+    }
+
+    /// Creates a new `AuthTokenState` with the given token.
+    #[must_use]
+    pub fn with_token(token: String) -> Self {
+        Self {
+            access_token: Some(token),
+        }
+    }
+
+    /// Returns `true` if authenticated (has a token).
+    #[must_use]
+    #[inline]
+    pub fn is_authenticated(&self) -> bool {
+        self.access_token.is_some()
     }
 }
 
@@ -78,45 +105,50 @@ pub fn get_me(token: &str) -> Result<crate::models::AuthUser, String> {
 }
 
 /// Fetches tasks for timer, merges with summary (elapsed) and status (running).
+///
+/// Returns an empty list if no token is provided (not logged in).
 pub fn list_tasks(token: &Option<String>) -> Result<Vec<Task>, String> {
     // Return empty list if no token (not logged in)
-    let token = match token {
+    let token = match token.as_ref() {
         Some(t) => t,
         None => return Ok(vec![]),
     };
 
-    let token_ref: &Option<String> = &Some(token.clone());
-    let header = auth_header(token_ref);
-    let mut req = ureq::get(&format!("{}/api/tasks/timer", BASE_URL));
-    if let Some(h) = header {
-        req = req.set("Authorization", &h);
-    }
-    let resp = req.call().map_err(|e| format!("API error: {}", e))?;
+    let header = format!("Bearer {}", token);
+    let resp = ureq::get(&format!("{}/api/tasks/timer", BASE_URL))
+        .set("Authorization", &header)
+        .call()
+        .map_err(|e| format!("API error: {}", e))?;
+
     let api_tasks: Vec<ApiTask> = resp
         .into_json()
         .map_err(|e| format!("Parse error: {}", e))?;
 
     // Get elapsed times from summary report
-    let summary = get_summary(token_ref).unwrap_or(SummaryReport {
+    let summary = get_summary(token).unwrap_or_else(|_| SummaryReport {
         tasks: vec![],
         total_seconds: 0,
     });
-    let mut summary_map = std::collections::HashMap::with_capacity(summary.tasks.len());
-    for st in &summary.tasks {
-        summary_map.insert(st.task_id, st.total_seconds);
-    }
 
-    let mut tasks = Vec::with_capacity(api_tasks.len());
-    for t in api_tasks {
-        let summary_elapsed = summary_map.get(&t.id).copied().unwrap_or(0);
-        tasks.push(Task {
-            id: t.id,
-            name: t.name,
-            budget_secs: ((t.max_hours.unwrap_or(8.0)) * 3600.0) as i64,
-            elapsed_secs: summary_elapsed,
-            running: false,
-        });
-    }
+    let summary_map: std::collections::HashMap<i64, i64> = summary
+        .tasks
+        .iter()
+        .map(|st| (st.task_id, st.total_seconds))
+        .collect();
+
+    let tasks = api_tasks
+        .into_iter()
+        .map(|t| {
+            let summary_elapsed = summary_map.get(&t.id).copied().unwrap_or(0);
+            Task {
+                id: t.id,
+                name: t.name,
+                budget_secs: (t.max_hours.unwrap_or(8.0) * 3600.0) as i64,
+                elapsed_secs: summary_elapsed,
+                running: false,
+            }
+        })
+        .collect();
 
     Ok(tasks)
 }
@@ -199,12 +231,12 @@ pub fn get_status(token: &Option<String>) -> Result<ApiStatus, String> {
     resp.into_json().map_err(|e| format!("Parse error: {}", e))
 }
 
-fn get_summary(token: &Option<String>) -> Result<SummaryReport, String> {
-    let mut req = ureq::get(&format!("{}/api/report/summary", BASE_URL));
-    if let Some(header) = auth_header(token) {
-        req = req.set("Authorization", &header);
-    }
-    let resp = req.call().map_err(|e| format!("API error: {}", e))?;
+fn get_summary(token: &str) -> Result<SummaryReport, String> {
+    let header = format!("Bearer {}", token);
+    let resp = ureq::get(&format!("{}/api/report/summary", BASE_URL))
+        .set("Authorization", &header)
+        .call()
+        .map_err(|e| format!("API error: {}", e))?;
     resp.into_json().map_err(|e| format!("Parse error: {}", e))
 }
 
@@ -373,7 +405,7 @@ fn extract_query_param(path: &str, key: &str) -> Option<String> {
     for pair in query.split('&') {
         let mut kv = pair.splitn(2, '=');
         if kv.next() == Some(key) {
-            return kv.next().map(|v| urldecd(v));
+            return kv.next().map(urldecd);
         }
     }
     None

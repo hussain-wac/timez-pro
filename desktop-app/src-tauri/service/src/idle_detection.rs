@@ -1,15 +1,21 @@
-/// Cross-platform idle detection with support for lock screen and sleep detection
-///
-/// Uses native APIs where possible to minimize overhead:
-/// - Linux: D-Bus (Mutter, freedesktop.ScreenSaver, GNOME ScreenSaver)
-/// - macOS: ioreg command (fast, no Python dependency)
-/// - Windows: Native Win32 API via FFI (no external processes)
+//! Cross-platform idle detection with support for lock screen and sleep detection.
+//!
+//! Uses native APIs where possible to minimize overhead:
+//! - Linux: D-Bus (Mutter, freedesktop.ScreenSaver, GNOME ScreenSaver)
+//! - macOS: ioreg command (fast, no Python dependency)
+//! - Windows: Native Win32 API via FFI (no external processes)
+
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 
 // ============================================================================
 // Public API
 // ============================================================================
 
-/// Platform-specific connection/state for idle detection
+/// Platform-specific connection/state for idle detection.
+///
+/// This struct maintains any necessary state for querying system idle time
+/// and session lock status. The implementation is platform-specific.
 pub struct IdleDetector {
     #[cfg(target_os = "linux")]
     dbus_conn: Option<dbus::blocking::Connection>,

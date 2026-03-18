@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::process::Command;
 
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::models::Task;
 use crate::services::api;
@@ -12,16 +12,33 @@ use crate::services::storage::LocalTimeStorage;
 
 const SYNC_INTERVAL_SECS: u64 = 30; // Sync every 30 seconds
 
-/// Send a desktop notification
-fn send_notification(app_handle: &AppHandle, title: &str, body: &str) {
-    if let Err(e) = app_handle
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
+/// Send a desktop notification using notify-send (works reliably on GNOME 46+/Ubuntu 24.04)
+fn send_notification(_app_handle: &AppHandle, title: &str, body: &str) {
+    #[cfg(target_os = "linux")]
     {
-        eprintln!("[notification] Failed to send: {}", e);
+        if let Err(e) = Command::new("notify-send")
+            .arg("--app-name=Timez Pro")
+            .arg("--urgency=normal")
+            .arg(title)
+            .arg(body)
+            .spawn()
+        {
+            eprintln!("[notification] Failed to send via notify-send: {}", e);
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        if let Err(e) = _app_handle
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+        {
+            eprintln!("[notification] Failed to send: {}", e);
+        }
     }
 }
 

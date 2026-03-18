@@ -5,18 +5,30 @@ use chrono::Utc;
 use dbus::blocking::Connection;
 
 use crate::api::AuthTokenState;
+use crate::constants::POLL_INTERVAL_SECS;
 use crate::models::{ActivityStats, IdleEvent};
 use crate::timer_state::TimerStateInner;
 
-const POLL_INTERVAL_SECS: u64 = 2;
-
+/// Tracks user activity statistics over time.
+///
+/// This struct accumulates active and idle seconds based on periodic
+/// polling of system idle state.
+#[derive(Debug)]
 pub struct ActivityTracker {
     pub active_secs: i64,
     pub idle_secs: i64,
     pub last_activity_at: chrono::DateTime<Utc>,
 }
 
+impl Default for ActivityTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ActivityTracker {
+    /// Creates a new activity tracker with zeroed counters.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             active_secs: 0,
@@ -25,6 +37,21 @@ impl ActivityTracker {
         }
     }
 
+    /// Records active time for the given duration.
+    #[inline]
+    pub fn record_active(&mut self, secs: i64) {
+        self.active_secs += secs;
+        self.last_activity_at = Utc::now();
+    }
+
+    /// Records idle time for the given duration.
+    #[inline]
+    pub fn record_idle(&mut self, secs: i64) {
+        self.idle_secs += secs;
+    }
+
+    /// Returns current activity statistics.
+    #[must_use]
     pub fn stats(&self) -> ActivityStats {
         let total = self.active_secs + self.idle_secs;
         let percent = if total > 0 {
@@ -38,6 +65,13 @@ impl ActivityTracker {
             total_secs: total,
             activity_percent: (percent * 10.0).round() / 10.0,
         }
+    }
+
+    /// Resets all counters to zero.
+    pub fn reset(&mut self) {
+        self.active_secs = 0;
+        self.idle_secs = 0;
+        self.last_activity_at = Utc::now();
     }
 }
 
@@ -101,7 +135,7 @@ pub fn spawn_idle_monitor(
 
             // Log every 10 iterations (~20 seconds) to reduce noise
             log_counter += 1;
-            if log_counter % 10 == 0 {
+            if log_counter.is_multiple_of(10) {
                 eprintln!(
                     "[idle] status: idle_ms={}, is_idle={}, paused_task={:?}",
                     idle_ms, is_idle, paused_task_id

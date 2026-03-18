@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { useAuth } from "./AuthContext";
 
 interface IdleEvent {
@@ -38,6 +39,22 @@ function formatIdleDuration(secs: number): string {
 }
 
 
+// Helper to send desktop notification
+async function showDesktopNotification(title: string, body: string) {
+  try {
+    let permissionGranted = await isPermissionGranted();
+    if (!permissionGranted) {
+      const permission = await requestPermission();
+      permissionGranted = permission === "granted";
+    }
+    if (permissionGranted) {
+      sendNotification({ title, body });
+    }
+  } catch (e) {
+    console.error("Failed to send notification:", e);
+  }
+}
+
 function App() {
   const { user, logout } = useAuth();
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -51,13 +68,6 @@ function App() {
   const [crashRecoveryOpen, setCrashRecoveryOpen] = useState(false);
   const [crashRecoveredTaskId, setCrashRecoveredTaskId] = useState<number | null>(null);
   const [syncNotification, setSyncNotification] = useState<string | null>(null);
-
-  const activity = {
-    active_secs: 0,
-    idle_secs: 0,
-    total_secs: 0,
-    activity_percent: 100,
-  };
 
   const refreshTasks = useCallback(async () => {
     try {
@@ -155,12 +165,14 @@ function App() {
     const unlistenSync = listen<{ message?: string; syncing_seconds?: number; task_id?: number }>("sync-in-progress", (event) => {
       const msg = event.payload?.message || "Time sync in progress...";
       setSyncNotification(msg);
+      showDesktopNotification("Timez Pro - Syncing", msg);
       setTimeout(() => setSyncNotification(null), 4000);
     });
 
     const unlistenSyncComplete = listen<{ message?: string; synced_seconds?: number; total_seconds?: number }>("sync-complete", (event) => {
       const msg = event.payload?.message || "Sync complete";
       setSyncNotification(msg);
+      showDesktopNotification("Timez Pro - Synced", msg);
       refreshTasks(); // Refresh tasks after successful sync
       setTimeout(() => setSyncNotification(null), 3000);
     });
@@ -168,12 +180,14 @@ function App() {
     const unlistenSyncError = listen<{ error?: string }>("sync-error", (event) => {
       const errorMsg = `Sync failed: ${event.payload?.error || "Unknown error"}`;
       setSyncNotification(errorMsg);
+      showDesktopNotification("Timez Pro - Error", errorMsg);
       setTimeout(() => setSyncNotification(null), 5000);
     });
 
     const unlistenMidnight = listen("midnight-reset", () => {
       refreshTasks();
       setSyncNotification("Timer reset at midnight");
+      showDesktopNotification("Timez Pro", "Timer reset at midnight");
       setTimeout(() => setSyncNotification(null), 5000);
     });
 
@@ -244,14 +258,6 @@ function App() {
 
   const selectedTask = tasks.find((t) => t.id === selectedTaskId);
   const totalDaySeconds = tasks.reduce((sum, t) => sum + t.elapsed_secs, 0);
-
-  // Activity color based on percentage
-  const activityColor =
-    activity.activity_percent >= 80
-      ? "text-green-600"
-      : activity.activity_percent >= 50
-        ? "text-yellow-600"
-        : "text-red-600";
 
   return (
     <div className="h-screen flex bg-gray-100 text-gray-800 select-none overflow-hidden">
@@ -491,41 +497,6 @@ function App() {
             </div>
           </div>
         )}
-
-        {/* Today's Activity Summary */}
-        <div className="border-t border-gray-200 bg-white px-4 py-3">
-          <div className="text-xs uppercase tracking-wider text-gray-400 mb-2">
-            Today's Activity
-          </div>
-          <div className="grid grid-cols-4 gap-3">
-            <div className="text-center">
-              <div className="text-lg font-mono font-semibold text-purple-700">
-                {formatHms(totalDaySeconds)}
-              </div>
-              <div className="text-xs text-gray-400">Tracked</div>
-            </div>
-            <div className="text-center">
-              <div className="text-lg font-mono font-semibold text-green-600">
-                {formatHms(activity.active_secs)}
-              </div>
-              <div className="text-xs text-gray-400">Active</div>
-            </div>
-            <div className="text-center">
-              <div className="text-lg font-mono font-semibold text-red-500">
-                {formatHms(activity.idle_secs)}
-              </div>
-              <div className="text-xs text-gray-400">Idle</div>
-            </div>
-            <div className="text-center">
-              <div
-                className={`text-lg font-mono font-semibold ${activityColor}`}
-              >
-                {activity.activity_percent}%
-              </div>
-              <div className="text-xs text-gray-400">Activity</div>
-            </div>
-          </div>
-        </div>
 
         {/* Status bar */}
         <div className="flex items-center justify-between px-4 py-2 bg-gray-100 border-t border-gray-200 text-xs text-gray-400">

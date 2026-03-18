@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -5,10 +6,14 @@ use chrono::Utc;
 
 use crate::api;
 use crate::api::AuthTokenState;
+use crate::constants::SYNC_INTERVAL_SECS;
 use crate::models::Task;
 
 /// Local timer state that tracks everything without hitting the external API.
-/// The external API is only called every SYNC_INTERVAL for persistence.
+///
+/// The external API is only called every `SYNC_INTERVAL_SECS` for persistence.
+/// This design allows the app to function offline and reduces API load.
+#[derive(Debug)]
 pub struct TimerStateInner {
     /// Cached task list from the last API sync
     pub cached_tasks: Vec<Task>,
@@ -21,26 +26,39 @@ pub struct TimerStateInner {
     /// Last time we synced with the external API
     pub last_sync_at: chrono::DateTime<Utc>,
     /// Elapsed seconds accumulated before current run (from API summary)
-    pub base_elapsed: std::collections::HashMap<i64, i64>,
+    pub base_elapsed: HashMap<i64, i64>,
     /// Total elapsed sent to backend in last sync (to avoid double-counting)
-    pub last_synced_elapsed: std::collections::HashMap<i64, i64>,
+    pub last_synced_elapsed: HashMap<i64, i64>,
 }
 
 pub type TimerState = Mutex<TimerStateInner>;
 
-const SYNC_INTERVAL_SECS: u64 = 60; // 1 minute
+impl Default for TimerStateInner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TimerStateInner {
+    /// Creates a new empty timer state.
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            cached_tasks: vec![],
+            cached_tasks: Vec::new(),
             running_task_id: None,
             timer_started_at: None,
             last_task_id: None,
             last_sync_at: chrono::DateTime::<Utc>::MIN_UTC,
-            base_elapsed: std::collections::HashMap::new(),
-            last_synced_elapsed: std::collections::HashMap::new(),
+            base_elapsed: HashMap::new(),
+            last_synced_elapsed: HashMap::new(),
         }
+    }
+
+    /// Returns `true` if a timer is currently running.
+    #[must_use]
+    #[inline]
+    pub fn is_running(&self) -> bool {
+        self.running_task_id.is_some()
     }
 
     /// Get total elapsed for a running task (base + live)

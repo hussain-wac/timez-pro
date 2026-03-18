@@ -1,30 +1,62 @@
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use std::process::Command;
+
 use chrono::Utc;
 use tauri::AppHandle;
-use tauri_plugin_notification::NotificationExt;
 
 use crate::api;
 use crate::api::AuthToken;
 use crate::local_store::LocalTimeStorage;
 use crate::timer_state::TimerState;
 
-/// Send a desktop notification
-fn send_notification(app_handle: &AppHandle, title: &str, body: &str) {
-    if let Err(e) = app_handle
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
+/// Maximum time to wait for sync operations during quit (milliseconds).
+const QUIT_SYNC_TIMEOUT_MS: u64 = 10_000;
+
+/// Retry count for sync operations during quit.
+const QUIT_SYNC_RETRIES: u32 = 3;
+
+/// Delay between retry attempts (milliseconds).
+const QUIT_RETRY_DELAY_MS: u64 = 300;
+
+/// Send a desktop notification.
+///
+/// On Linux, uses `notify-send` for reliable delivery on GNOME 46+.
+/// On other platforms, uses Tauri's notification plugin.
+fn send_notification(_app_handle: &AppHandle, title: &str, body: &str) {
+    #[cfg(target_os = "linux")]
     {
-        eprintln!("[notification] Failed to send: {}", e);
+        if let Err(e) = Command::new("notify-send")
+            .arg("--app-name=Timez Pro")
+            .arg("--urgency=normal")
+            .arg(title)
+            .arg(body)
+            .spawn()
+        {
+            eprintln!("[notification] Failed to send via notify-send: {}", e);
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        if let Err(e) = _app_handle
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+        {
+            eprintln!("[notification] Failed to send: {}", e);
+        }
     }
 }
 
-/// Format seconds into a human-readable string
+// Use the shared format_duration from the crate root or define inline
 fn format_duration(secs: i64) -> String {
     if secs < 60 {
         format!("{} sec", secs)
@@ -161,9 +193,9 @@ pub fn quit_app(app_handle: AppHandle) -> Result<(), String> {
                     task.task_id, task.total_elapsed
                 );
 
-                // Retry up to 3 times
+                // Retry up to QUIT_SYNC_RETRIES times
                 let mut success = false;
-                for attempt in 1..=3 {
+                for attempt in 1..=QUIT_SYNC_RETRIES {
                     match api::sync_time(
                         task.task_id,
                         task.total_elapsed,
@@ -183,8 +215,8 @@ pub fn quit_app(app_handle: AppHandle) -> Result<(), String> {
                         }
                         Err(e) => {
                             eprintln!("[quit] Sync attempt {} failed: {}", attempt, e);
-                            if attempt < 3 {
-                                thread::sleep(Duration::from_millis(300));
+                            if attempt < QUIT_SYNC_RETRIES {
+                                thread::sleep(Duration::from_millis(QUIT_RETRY_DELAY_MS));
                             }
                         }
                     }
@@ -257,9 +289,17 @@ pub fn quit_app(app_handle: AppHandle) -> Result<(), String> {
         app_handle_clone.exit(0);
     });
 
-    // Return immediately - the sync thread will exit the app when done
-    // But wait a short time to ensure the thread starts
-    thread::sleep(Duration::from_millis(50));
+    // Wait for sync to complete with timeout
+    // This ensures we don't return before critical sync operations finish
+    let start = std::time::Instant::now();
+    while !sync_complete.load(Ordering::SeqCst) {
+        if start.elapsed().as_millis() as u64 > QUIT_SYNC_TIMEOUT_MS {
+            eprintln!("[quit] Sync timeout reached, forcing exit");
+            app_handle.exit(1);
+            return Err("Sync timeout during quit".to_string());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 
     Ok(())
 }
