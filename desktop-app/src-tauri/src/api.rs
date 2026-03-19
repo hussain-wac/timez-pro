@@ -177,7 +177,10 @@ pub fn get_status(token: &Option<String>) -> Result<ApiStatus, String> {
 }
 
 fn get_summary(token: &Option<String>) -> Result<SummaryReport, String> {
-    let mut req = ureq::get(&format!("{}/api/report/summary", BASE_URL));
+    // Use daily report (today's date) instead of all-time summary
+    // This ensures the timer resets at midnight
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let mut req = ureq::get(&format!("{}/api/report/daily?date={}", BASE_URL, today));
     if let Some(header) = auth_header(token) {
         req = req.set("Authorization", &header);
     }
