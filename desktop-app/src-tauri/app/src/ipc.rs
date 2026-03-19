@@ -364,7 +364,9 @@ fn route_request(request: &Request) -> ServiceKind {
         | Request::CheckMidnightReset
         | Request::ListProjects
         | Request::ListProjectTasks { .. }
-        | Request::SetActiveProject { .. } => ServiceKind::Task,
+        | Request::SetActiveProject { .. }
+        | Request::GetSyncStatus
+        | Request::RetrySyncFailed => ServiceKind::Task,
         Request::GetActivityStats => ServiceKind::Tracker,
         Request::GetIdleEvent | Request::ResolveIdleEvent => ServiceKind::IdleTime,
         Request::Shutdown => ServiceKind::Quit,
@@ -434,6 +436,13 @@ pub fn decode_midnight_reset(data: ResponseData) -> Result<Option<MidnightResetE
 pub fn decode_projects(data: ResponseData) -> Result<Vec<Project>, String> {
     match data {
         ResponseData::Projects(projects) => Ok(projects),
+        _ => Err("Unexpected service response".to_string()),
+    }
+}
+
+pub fn decode_sync_status(data: ResponseData) -> Result<timez_core::models::SyncQueueStatus, String> {
+    match data {
+        ResponseData::SyncStatus(status) => Ok(status),
         _ => Err("Unexpected service response".to_string()),
     }
 }

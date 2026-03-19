@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { UserPlus, X, Users } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { UserPlus, X, Users, AlertTriangle } from 'lucide-react';
 import { dashboardApi } from '../api';
 
 export default function MemberManager({ projectId }) {
@@ -9,72 +9,127 @@ export default function MemberManager({ projectId }) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedUsers, setSelectedUsers] = useState([]);
   const [adding, setAdding] = useState(false);
+  const [error, setError] = useState(null);
+  // Confirmation modal state
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [memberToRemove, setMemberToRemove] = useState(null);
+  const [removing, setRemoving] = useState(false);
 
-  const fetchMembers = async () => {
+  // Track mount state to prevent state updates after unmount
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const fetchMembers = useCallback(async () => {
     try {
       const data = await dashboardApi.getProjectMembers(projectId);
-      setMembers(data);
+      if (isMountedRef.current) {
+        setMembers(data);
+      }
     } catch (err) {
       console.error('Failed to fetch members:', err);
     }
-  };
+  }, [projectId]);
 
-  const fetchAllUsers = async () => {
+  const fetchAllUsers = useCallback(async () => {
     try {
       const data = await dashboardApi.getUsers();
-      setAllUsers(data);
+      if (isMountedRef.current) {
+        setAllUsers(data);
+      }
     } catch (err) {
       console.error('Failed to fetch users:', err);
     }
-  };
+  }, []);
 
   useEffect(() => {
+    let cancelled = false;
     const loadData = async () => {
       setLoading(true);
       await Promise.all([fetchMembers(), fetchAllUsers()]);
-      setLoading(false);
+      if (!cancelled) {
+        setLoading(false);
+      }
     };
     loadData();
-  }, [projectId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, fetchMembers, fetchAllUsers]);
 
-  const handleRemoveMember = async (userId) => {
-    if (!confirm('Remove this member from the project?')) return;
+  const handleRemoveMemberClick = useCallback((member) => {
+    setMemberToRemove(member);
+    setShowRemoveConfirm(true);
+  }, []);
+
+  const handleConfirmRemove = useCallback(async () => {
+    if (!memberToRemove) return;
+
+    setRemoving(true);
+    setError(null);
     try {
-      await dashboardApi.removeProjectMember(projectId, userId);
-      await fetchMembers();
+      await dashboardApi.removeProjectMember(projectId, memberToRemove.id);
+      if (isMountedRef.current) {
+        await fetchMembers();
+        setShowRemoveConfirm(false);
+        setMemberToRemove(null);
+      }
     } catch (err) {
       console.error('Failed to remove member:', err);
-      alert('Failed to remove member');
+      if (isMountedRef.current) {
+        setError('Failed to remove member. Please try again.');
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setRemoving(false);
+      }
     }
-  };
+  }, [memberToRemove, projectId, fetchMembers]);
 
-  const handleAddMembers = async () => {
+  const handleCancelRemove = useCallback(() => {
+    setShowRemoveConfirm(false);
+    setMemberToRemove(null);
+    setError(null);
+  }, []);
+
+  const handleAddMembers = useCallback(async () => {
     if (selectedUsers.length === 0) return;
     setAdding(true);
+    setError(null);
     try {
       await dashboardApi.addProjectMembers(projectId, selectedUsers);
-      await fetchMembers();
-      setShowAddModal(false);
-      setSelectedUsers([]);
+      if (isMountedRef.current) {
+        await fetchMembers();
+        setShowAddModal(false);
+        setSelectedUsers([]);
+      }
     } catch (err) {
       console.error('Failed to add members:', err);
-      alert('Failed to add members');
+      if (isMountedRef.current) {
+        setError('Failed to add members. Please try again.');
+      }
     } finally {
-      setAdding(false);
+      if (isMountedRef.current) {
+        setAdding(false);
+      }
     }
-  };
+  }, [selectedUsers, projectId, fetchMembers]);
 
   const availableUsers = allUsers.filter(
     user => !members.some(member => member.id === user.id)
   );
 
-  const toggleUserSelection = (userId) => {
+  const toggleUserSelection = useCallback((userId) => {
     setSelectedUsers(prev =>
       prev.includes(userId)
         ? prev.filter(id => id !== userId)
         : [...prev, userId]
     );
-  };
+  }, []);
 
   if (loading) {
     return (
@@ -141,7 +196,7 @@ export default function MemberManager({ projectId }) {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right">
                     <button
-                      onClick={() => handleRemoveMember(member.id)}
+                      onClick={() => handleRemoveMemberClick(member)}
                       className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-md transition-colors"
                     >
                       <X className="w-3 h-3" />
@@ -155,15 +210,62 @@ export default function MemberManager({ projectId }) {
         </div>
       )}
 
+      {/* Remove Member Confirmation Modal */}
+      {showRemoveConfirm && memberToRemove && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-md w-full max-w-sm shadow-xl mx-4">
+            <div className="p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-medium text-gray-900">Remove Member</h3>
+                  <p className="text-sm text-gray-500">This action cannot be undone.</p>
+                </div>
+              </div>
+              <p className="text-sm text-gray-600 mb-4">
+                Are you sure you want to remove <span className="font-medium">{memberToRemove.name}</span> from this project?
+              </p>
+
+              {error && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">
+                  {error}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={handleCancelRemove}
+                  disabled={removing}
+                  className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md transition-colors font-medium disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmRemove}
+                  disabled={removing}
+                  className="px-4 py-2 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors font-medium"
+                >
+                  {removing ? 'Removing...' : 'Remove'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Members Modal */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-md w-full max-w-md shadow-xl max-h-[80vh] flex flex-col">
+          <div className="bg-white rounded-md w-full max-w-md shadow-xl max-h-[80vh] flex flex-col mx-4">
             <div className="flex items-center justify-between p-6 border-b border-gray-200">
               <h3 className="text-base font-medium text-gray-900">Add Members</h3>
               <button
                 onClick={() => {
                   setShowAddModal(false);
                   setSelectedUsers([]);
+                  setError(null);
                 }}
                 className="p-1 hover:bg-gray-100 rounded transition-colors"
               >
@@ -172,6 +274,12 @@ export default function MemberManager({ projectId }) {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6">
+              {error && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">
+                  {error}
+                </div>
+              )}
+
               {availableUsers.length === 0 ? (
                 <div className="text-center py-8">
                   <p className="text-gray-600 text-sm">All users are already members</p>
@@ -213,6 +321,7 @@ export default function MemberManager({ projectId }) {
                 onClick={() => {
                   setShowAddModal(false);
                   setSelectedUsers([]);
+                  setError(null);
                 }}
                 className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md transition-colors font-medium"
               >

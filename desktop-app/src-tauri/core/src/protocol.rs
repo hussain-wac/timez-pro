@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
-    ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Project, Task,
-    TimerStatus,
+    ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Project, SyncQueueStatus,
+    Task, TimerStatus,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,6 +53,10 @@ pub enum Request {
     SetActiveProject {
         project_id: Option<i64>,
     },
+    /// Get the current sync queue status (pending/failed entries)
+    GetSyncStatus,
+    /// Retry all failed sync entries
+    RetrySyncFailed,
     Shutdown,
 }
 
@@ -75,5 +79,7 @@ pub enum ResponseData {
     MidnightReset(Option<MidnightResetEvent>),
     /// List of projects
     Projects(Vec<Project>),
+    /// Sync queue status (pending/failed entries)
+    SyncStatus(SyncQueueStatus),
     Unit,
 }

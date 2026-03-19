@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Users, ListTodo, Clock, Settings, BarChart3, Plus, X } from 'lucide-react';
 import { dashboardApi } from '../api';
@@ -29,6 +29,10 @@ export default function ProjectDetail() {
   const [activeTab, setActiveTab] = useState('overview');
   const [showCreateTask, setShowCreateTask] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState(null);
+  const [projectMembers, setProjectMembers] = useState([]);
+  const [selectedAssignees, setSelectedAssignees] = useState([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
   const [newTask, setNewTask] = useState({
     name: '',
     description: '',
@@ -37,67 +41,174 @@ export default function ProjectDetail() {
     status: 'todo'
   });
 
-  const fetchProject = async () => {
+  // Track mount state to prevent state updates after unmount
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const fetchProject = useCallback(async () => {
     try {
       const data = await dashboardApi.getProject(id);
-      setProject(data);
+      if (isMountedRef.current) {
+        setProject(data);
+        setError(null);
+      }
     } catch (err) {
       console.error('Failed to fetch project:', err);
+      if (isMountedRef.current) {
+        setError('Failed to load project');
+      }
     }
-  };
+  }, [id]);
 
-  const fetchTasks = async () => {
+  const fetchTasks = useCallback(async () => {
     try {
       const data = await dashboardApi.getProjectTasks(id);
-      // Group tasks by status
-      const grouped = { todo: [], in_progress: [], review: [], done: [] };
-      data.forEach(task => {
-        const status = task.status || 'todo';
-        if (grouped[status]) {
-          grouped[status].push(task);
-        }
-      });
-      setTasks(grouped);
+      if (isMountedRef.current) {
+        // Group tasks by status
+        const grouped = { todo: [], in_progress: [], review: [], done: [] };
+        data.forEach(task => {
+          const status = task.status || 'todo';
+          if (grouped[status]) {
+            grouped[status].push(task);
+          }
+        });
+        setTasks(grouped);
+      }
     } catch (err) {
       console.error('Failed to fetch tasks:', err);
     }
-  };
+  }, [id]);
 
   useEffect(() => {
+    let cancelled = false;
     const loadData = async () => {
       setLoading(true);
       await Promise.all([fetchProject(), fetchTasks()]);
-      setLoading(false);
+      if (!cancelled) {
+        setLoading(false);
+      }
     };
     loadData();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, fetchProject, fetchTasks]);
+
+  // Fetch project members when create task modal opens
+  const fetchProjectMembers = useCallback(async () => {
+    setLoadingMembers(true);
+    try {
+      const members = await dashboardApi.getProjectMembers(id);
+      if (isMountedRef.current) {
+        setProjectMembers(members);
+        // Select all members by default
+        setSelectedAssignees(members.map(m => m.user_id));
+      }
+    } catch (err) {
+      console.error('Failed to fetch project members:', err);
+    } finally {
+      if (isMountedRef.current) {
+        setLoadingMembers(false);
+      }
+    }
   }, [id]);
 
-  const handleStatusChange = async (taskId, newStatus) => {
+  const handleOpenCreateModal = useCallback(() => {
+    setShowCreateTask(true);
+    fetchProjectMembers();
+  }, [fetchProjectMembers]);
+
+  const handleCloseCreateModal = useCallback(() => {
+    setShowCreateTask(false);
+    setError(null);
+    setSelectedAssignees([]);
+    setNewTask({ name: '', description: '', max_hours: 8, priority: 'medium', status: 'todo' });
+  }, []);
+
+  const toggleAssignee = useCallback((userId) => {
+    setSelectedAssignees(prev =>
+      prev.includes(userId)
+        ? prev.filter(id => id !== userId)
+        : [...prev, userId]
+    );
+  }, []);
+
+  const handleStatusChange = useCallback(async (taskId, newStatus) => {
+    // Optimistic update for smoother UI
+    setTasks(prev => {
+      const newTasks = { ...prev };
+      let movedTask = null;
+
+      // Find and remove the task from its current column
+      for (const status of Object.keys(newTasks)) {
+        const index = newTasks[status].findIndex(t => t.id === taskId);
+        if (index !== -1) {
+          movedTask = { ...newTasks[status][index], status: newStatus };
+          newTasks[status] = [...newTasks[status].slice(0, index), ...newTasks[status].slice(index + 1)];
+          break;
+        }
+      }
+
+      // Add to new column
+      if (movedTask && newTasks[newStatus]) {
+        newTasks[newStatus] = [...newTasks[newStatus], movedTask];
+      }
+
+      return newTasks;
+    });
+
     try {
       await dashboardApi.updateTaskStatus(taskId, newStatus);
-      await fetchTasks();
+      // Refresh to get server state
+      if (isMountedRef.current) {
+        await fetchTasks();
+      }
     } catch (err) {
       console.error('Failed to update task status:', err);
+      // Revert on error by refetching
+      if (isMountedRef.current) {
+        await fetchTasks();
+      }
     }
-  };
+  }, [fetchTasks]);
 
-  const handleCreateTask = async (e) => {
+  const handleCreateTask = useCallback(async (e) => {
     e.preventDefault();
     if (!newTask.name.trim()) return;
 
+    if (selectedAssignees.length === 0) {
+      setError('Please select at least one assignee.');
+      return;
+    }
+
     setCreating(true);
+    setError(null);
     try {
-      await dashboardApi.createProjectTask(id, newTask);
-      await fetchTasks();
-      setShowCreateTask(false);
-      setNewTask({ name: '', description: '', max_hours: 8, priority: 'medium', status: 'todo' });
+      const taskData = {
+        ...newTask,
+        assignee_ids: selectedAssignees
+      };
+      await dashboardApi.createProjectTask(id, taskData);
+      if (isMountedRef.current) {
+        await fetchTasks();
+        handleCloseCreateModal();
+      }
     } catch (err) {
       console.error('Failed to create task:', err);
-      alert('Failed to create task');
+      if (isMountedRef.current) {
+        setError('Failed to create task. Please try again.');
+      }
     } finally {
-      setCreating(false);
+      if (isMountedRef.current) {
+        setCreating(false);
+      }
     }
-  };
+  }, [id, newTask, selectedAssignees, fetchTasks, handleCloseCreateModal]);
 
   if (loading) {
     return (
@@ -239,7 +350,7 @@ export default function ProjectDetail() {
         <div className="space-y-4">
           <div className="flex justify-end">
             <button
-              onClick={() => setShowCreateTask(true)}
+              onClick={handleOpenCreateModal}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm font-medium"
             >
               <Plus className="w-4 h-4" />
@@ -264,14 +375,19 @@ export default function ProjectDetail() {
       {/* Create Task Modal */}
       {showCreateTask && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-md shadow-lg w-full max-w-md mx-4">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+          <div className="bg-white rounded-md shadow-lg w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 sticky top-0 bg-white">
               <h3 className="text-base font-medium text-gray-900">Create New Task</h3>
-              <button onClick={() => setShowCreateTask(false)} className="text-gray-400 hover:text-gray-600">
+              <button onClick={handleCloseCreateModal} className="text-gray-400 hover:text-gray-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
             <form onSubmit={handleCreateTask} className="p-4 space-y-4">
+              {error && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">
+                  {error}
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Task Name *</label>
                 <input
@@ -331,17 +447,97 @@ export default function ProjectDetail() {
                   <option value="done">Done</option>
                 </select>
               </div>
+
+              {/* Assignees Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Assign To *
+                  <span className="text-gray-400 font-normal ml-1">
+                    ({selectedAssignees.length} selected)
+                  </span>
+                </label>
+                {loadingMembers ? (
+                  <div className="flex items-center justify-center py-4">
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                    <span className="ml-2 text-sm text-gray-500">Loading members...</span>
+                  </div>
+                ) : projectMembers.length === 0 ? (
+                  <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-md text-sm text-yellow-700">
+                    No members in this project. Add members first.
+                  </div>
+                ) : (
+                  <div className="border border-gray-300 rounded-md max-h-40 overflow-y-auto">
+                    {projectMembers.map(member => (
+                      <label
+                        key={member.user_id}
+                        className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedAssignees.includes(member.user_id)}
+                          onChange={() => toggleAssignee(member.user_id)}
+                          className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                        />
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          {member.user?.picture ? (
+                            <img
+                              src={member.user.picture}
+                              alt=""
+                              className="w-6 h-6 rounded-full"
+                            />
+                          ) : (
+                            <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center">
+                              <span className="text-xs text-gray-600">
+                                {(member.user?.name || member.user?.email || '?').charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-gray-900 truncate">
+                              {member.user?.name || member.user?.email}
+                            </p>
+                            {member.user?.name && (
+                              <p className="text-xs text-gray-500 truncate">{member.user.email}</p>
+                            )}
+                          </div>
+                          {member.role === 'lead' && (
+                            <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Lead</span>
+                          )}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2 mt-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAssignees(projectMembers.map(m => m.user_id))}
+                    className="text-xs text-blue-600 hover:text-blue-700"
+                  >
+                    Select All
+                  </button>
+                  <span className="text-gray-300">|</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAssignees([])}
+                    className="text-xs text-blue-600 hover:text-blue-700"
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
+
               <div className="flex gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowCreateTask(false)}
+                  onClick={handleCloseCreateModal}
                   className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={creating || !newTask.name.trim()}
+                  disabled={creating || !newTask.name.trim() || selectedAssignees.length === 0}
                   className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                 >
                   {creating ? 'Creating...' : 'Create Task'}

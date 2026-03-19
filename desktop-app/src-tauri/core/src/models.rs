@@ -69,3 +69,16 @@ pub struct MidnightResetEvent {
     /// The new date (today) after the reset
     pub new_date: String,
 }
+
+/// Status of the sync queue showing pending and failed entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncQueueStatus {
+    /// Number of entries pending sync (will be retried)
+    pub pending_count: usize,
+    /// Number of entries that have exceeded max retries
+    pub failed_count: usize,
+    /// Whether there are any entries that need user attention
+    pub has_errors: bool,
+    /// Last sync error message (if any)
+    pub last_error: Option<String>,
+}

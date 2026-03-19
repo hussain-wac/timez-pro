@@ -81,10 +81,71 @@ function App() {
   const [crashRecoveredTaskId, setCrashRecoveredTaskId] = useState<number | null>(null);
   const [syncNotification, setSyncNotification] = useState<string | null>(null);
 
-  // Track daily total - increments locally every second, syncs on stop/start
-  const [dailyTotal, setDailyTotal] = useState(0);
+  // Track timer running state
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const isTimerRunningRef = useRef(false); // Ref for use in interval
+
+  // Refs for drift-free timer calculation
+  const timerStartedAtRef = useRef<number | null>(null); // Timestamp when timer started (ms)
+  const baseElapsedRef = useRef(0); // Task elapsed seconds at start point
+  const baseDailyTotalRef = useRef(0); // Daily total at start point
+
+  // Daily total timer - saved locally by date, runs like a stopwatch
+  const [dailyTotal, setDailyTotal] = useState(0);
+
+  // Get today's date key for localStorage
+  const getTodayKey = () => {
+    const today = new Date();
+    return `timez_daily_${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  };
+
+  // Load daily total from localStorage on mount
+  useEffect(() => {
+    const key = getTodayKey();
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if (!isNaN(parsed)) {
+        setDailyTotal(parsed);
+        baseDailyTotalRef.current = parsed;
+      }
+    }
+  }, []);
+
+  // Save daily total to localStorage whenever it changes (debounced)
+  useEffect(() => {
+    const key = getTodayKey();
+    localStorage.setItem(key, String(dailyTotal));
+  }, [dailyTotal]);
+
+  // Check for midnight reset
+  useEffect(() => {
+    const checkMidnight = () => {
+      const now = new Date();
+      if (now.getHours() === 0 && now.getMinutes() === 0) {
+        // It's midnight - reset daily total
+        setDailyTotal(0);
+        baseDailyTotalRef.current = 0;
+        // Clean up old date keys (keep only last 7 days)
+        const keysToKeep = new Set<string>();
+        for (let i = 0; i < 7; i++) {
+          const d = new Date();
+          d.setDate(d.getDate() - i);
+          keysToKeep.add(`timez_daily_${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+        }
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('timez_daily_') && !keysToKeep.has(k)) {
+            localStorage.removeItem(k);
+          }
+        }
+      }
+    };
+
+    // Check every minute
+    const id = setInterval(checkMidnight, 60000);
+    return () => clearInterval(id);
+  }, []);
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -99,54 +160,79 @@ function App() {
     }
   }, [selectedProjectId]);
 
-  // Fetch ALL tasks to calculate daily total (only on init and after stop)
-  const refreshDailyTotal = useCallback(async () => {
+  // Check if any task is running globally (used on init)
+  const checkRunningTask = useCallback(async () => {
     try {
       const result = await invoke<Task[]>("list_tasks");
       if (result) {
-        // Calculate total from server values
-        const total = result.reduce((sum, t) => sum + t.elapsed_secs, 0);
-        setDailyTotal(total);
-        // Check if any task is running
-        const running = result.some((t) => t.running);
-        setIsTimerRunning(running);
+        const runningTask = result.find((t) => t.running);
+        if (runningTask) {
+          setIsTimerRunning(true);
+          // Initialize refs if not already tracking
+          if (!timerStartedAtRef.current) {
+            timerStartedAtRef.current = Date.now();
+            baseElapsedRef.current = runningTask.elapsed_secs;
+            baseDailyTotalRef.current = dailyTotal;
+          }
+        } else {
+          setIsTimerRunning(false);
+          timerStartedAtRef.current = null;
+        }
       }
     } catch (error) {
-      console.error("Failed to refresh daily total:", error);
+      console.error("Failed to check running task:", error);
     }
-  }, []);
+  }, [dailyTotal]);
 
   const refreshTasks = useCallback(async () => {
     try {
+      let result: Task[] | null = null;
+
       if (selectedProjectId !== null) {
-        const result = await invoke<Task[]>("list_project_tasks", { projectId: selectedProjectId });
-        if (result) {
-          setTasks(result);
-          // Check if any task is running
-          const running = result.some((t) => t.running);
-          if (running) {
-            setIsTimerRunning(true);
+        result = await invoke<Task[]>("list_project_tasks", { projectId: selectedProjectId });
+      } else {
+        result = await invoke<Task[]>("list_tasks");
+      }
+
+      if (result) {
+        setTasks(result);
+
+        // Check if any task in CURRENT view is running
+        const runningTaskInView = result.find((t) => t.running);
+
+        if (runningTaskInView) {
+          setIsTimerRunning(true);
+          // Only initialize refs if not already tracking (avoid resetting mid-tick)
+          if (!timerStartedAtRef.current) {
+            timerStartedAtRef.current = Date.now();
+            baseElapsedRef.current = runningTaskInView.elapsed_secs;
+            baseDailyTotalRef.current = dailyTotal;
           }
         }
-      } else {
-        const result = await invoke<Task[]>("list_tasks");
-        if (result) {
-          setTasks(result);
-          const running = result.some((t) => t.running);
-          if (running) {
-            setIsTimerRunning(true);
+      }
+
+      // Check globally if any task is running (for when viewing different project)
+      if (selectedProjectId !== null) {
+        const allTasks = await invoke<Task[]>("list_tasks");
+        const globalRunningTask = allTasks?.find((t) => t.running);
+        if (globalRunningTask) {
+          setIsTimerRunning(true);
+          if (!timerStartedAtRef.current) {
+            timerStartedAtRef.current = Date.now();
+            baseElapsedRef.current = globalRunningTask.elapsed_secs;
+            baseDailyTotalRef.current = dailyTotal;
           }
         }
       }
     } catch (error) {
       console.error("Failed to refresh tasks:", error);
     }
-  }, [selectedProjectId]);
+  }, [selectedProjectId, dailyTotal]);
 
   // Initial load
   useEffect(() => {
     refreshProjects();
-    refreshDailyTotal();
+    checkRunningTask();
   }, []);
 
   // Refresh tasks when project changes
@@ -178,41 +264,51 @@ function App() {
     return () => clearInterval(id);
   }, []);
 
-  // Sync tasks with backend every 30 seconds (not daily total while running)
+  // Sync tasks with backend every 30 seconds
   useEffect(() => {
     const id = setInterval(() => {
-      refreshTasks();
-      // Only sync daily total if no timer is running (to prevent jumps)
+      // Only sync when timer is NOT running to prevent value jumps
       if (!isTimerRunningRef.current) {
-        refreshDailyTotal();
+        refreshTasks();
       }
     }, 30000);
     return () => clearInterval(id);
-  }, [refreshTasks, refreshDailyTotal]);
+  }, [refreshTasks]);
 
   // Keep ref in sync with state
   useEffect(() => {
     isTimerRunningRef.current = isTimerRunning;
   }, [isTimerRunning]);
 
-  // Local tick for smooth real-time display - runs once, uses ref
+  // Local tick for smooth real-time display - uses timestamp-based calculation to prevent drift
   useEffect(() => {
-    let lastTick = Date.now();
     const id = setInterval(() => {
-      const now = Date.now();
-      // Guard against double-ticks (must be at least 900ms since last tick)
-      if (now - lastTick < 900) return;
-      lastTick = now;
-
       // Use ref to check running state (avoids recreating interval)
-      if (isTimerRunningRef.current) {
-        setDailyTotal((dt) => dt + 1);
-        setTasks((prev) =>
-          prev.map((t) =>
-            t.running ? { ...t, elapsed_secs: t.elapsed_secs + 1 } : t,
-          )
-        );
+      if (!isTimerRunningRef.current || !timerStartedAtRef.current) return;
+
+      // Calculate actual elapsed time from timestamp - this prevents drift
+      const now = Date.now();
+      const elapsedSinceStart = Math.floor((now - timerStartedAtRef.current) / 1000);
+
+      // Protect against clock changes: if elapsed is negative or unreasonably large (> 1 hour jump), ignore
+      if (elapsedSinceStart < 0 || elapsedSinceStart > 3600) {
+        // Clock may have changed - reset the start timestamp
+        timerStartedAtRef.current = now;
+        return;
       }
+
+      const newTaskElapsed = baseElapsedRef.current + elapsedSinceStart;
+      const newDailyTotal = baseDailyTotalRef.current + elapsedSinceStart;
+
+      // Update running task's elapsed time in the current view
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.running ? { ...t, elapsed_secs: newTaskElapsed } : t
+        )
+      );
+
+      // Update daily total (stopwatch style)
+      setDailyTotal(newDailyTotal);
     }, 1000);
     return () => clearInterval(id);
   }, []); // Empty deps - interval created once
@@ -299,17 +395,38 @@ function App() {
       if (task?.running) {
         // Stop the timer
         await invoke<Task[]>("stop_timer");
+
+        // Save the current daily total before clearing refs
+        // (dailyTotal state already has the correct value from last tick)
+        baseDailyTotalRef.current = dailyTotal;
+
+        // Clear timer refs
+        timerStartedAtRef.current = null;
+        setIsTimerRunning(false);
+
         // Update local state immediately for responsive UI
         setTasks((prev) =>
           prev.map((t) => (t.id === taskId ? { ...t, running: false } : t))
         );
-        setIsTimerRunning(false);
-        // Sync daily total from server after stopping
-        await refreshDailyTotal();
+
+        // Refresh to get accurate task values after sync
+        await refreshTasks();
       } else {
-        // Start the timer
+        // Start the timer - this may stop another running timer
+        // The backend handles stopping any existing timer and syncing
         await invoke<Task[]>("start_timer", { taskId });
-        // Update local state immediately for responsive UI
+
+        // Fetch task to get accurate elapsed value after backend sync
+        const allTasks = await invoke<Task[]>("list_tasks");
+        const newTaskFromServer = allTasks.find((t) => t.id === taskId);
+        const currentElapsed = newTaskFromServer?.elapsed_secs ?? 0;
+
+        // Initialize refs for drift-free tracking
+        timerStartedAtRef.current = Date.now();
+        baseElapsedRef.current = currentElapsed;
+        baseDailyTotalRef.current = dailyTotal; // Continue from current daily total
+
+        // Update current view tasks
         setTasks((prev) =>
           prev.map((t) => ({
             ...t,
@@ -321,9 +438,9 @@ function App() {
       setSelectedTaskId(taskId);
     } catch (error) {
       console.error("Timer toggle failed:", error);
-      // On error, refresh to get correct state
+      // On error, refresh to get correct state and reset refs
+      timerStartedAtRef.current = null;
       await refreshTasks();
-      await refreshDailyTotal();
     }
   };
 
@@ -347,9 +464,11 @@ function App() {
         taskId: idleTaskId,
         durationSecs: idleEvent.idle_duration_secs,
       });
+      // Add idle time to daily total
+      setDailyTotal((prev) => prev + idleEvent.idle_duration_secs);
+      baseDailyTotalRef.current = dailyTotal + idleEvent.idle_duration_secs;
       // Refresh to get updated state
       await refreshTasks();
-      await refreshDailyTotal();
       await invoke("resolve_idle_event");
       setIdleEvent(null);
       setIdleTaskId(null);
@@ -365,9 +484,11 @@ function App() {
       await invoke<Task[]>("discard_idle_time", {
         taskId: idleEvent.task_id,
       });
+      // Subtract idle time from daily total (it was already counted while idle)
+      setDailyTotal((prev) => Math.max(0, prev - idleEvent.idle_duration_secs));
+      baseDailyTotalRef.current = Math.max(0, dailyTotal - idleEvent.idle_duration_secs);
       // Refresh to get updated state
       await refreshTasks();
-      await refreshDailyTotal();
       await invoke("resolve_idle_event");
       setIdleEvent(null);
       setIdleTaskId(null);
@@ -387,8 +508,9 @@ function App() {
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const selectedTask = tasks.find((t) => t.id === selectedTaskId);
-  // Today's total - runs in real-time locally
+  // Today's total - runs like a stopwatch, saved locally by date
   const totalDaySeconds = dailyTotal;
+  const overtime = totalDaySeconds > EIGHT_HOURS ? totalDaySeconds - EIGHT_HOURS : 0;
 
   return (
     <div className="h-screen flex bg-gray-100 text-gray-800 select-none overflow-hidden">
@@ -446,21 +568,47 @@ function App() {
 
         {/* Today's total */}
         <div className="px-4 pt-4 pb-3 border-b border-gray-200">
-          <div className="text-xs uppercase tracking-wider text-gray-400 mb-1">
-            Today's Total
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs uppercase tracking-wider text-gray-400">
+              Today's Total
+            </div>
+            {overtime > 0 && (
+              <div className="flex items-center gap-1 text-xs font-medium text-green-600">
+                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 0l-3 3a1 1 0 001.414 1.414L9 9.414V13a1 1 0 102 0V9.414l1.293 1.293a1 1 0 001.414-1.414z" clipRule="evenodd" />
+                </svg>
+                +{formatHms(overtime)}
+              </div>
+            )}
           </div>
-          <div className="text-2xl font-mono font-semibold text-black">
-            {formatHms(totalDaySeconds)}
+          <div className="flex items-baseline gap-2">
+            <div className={`text-2xl font-mono font-semibold ${overtime > 0 ? 'text-green-600' : 'text-black'}`}>
+              {formatHms(totalDaySeconds)}
+            </div>
+            <div className="text-xs text-gray-400">
+              / 8:00:00
+            </div>
           </div>
-          <div className="mt-2 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+          <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden relative">
+            {/* Base progress bar (up to 8 hours) */}
             <div
-              className={`h-full rounded-full transition-all duration-500 ${
-                totalDaySeconds >= EIGHT_HOURS ? "bg-red-500" : "bg-purple-600"
+              className={`h-full rounded-full transition-all duration-300 ${
+                overtime > 0 ? "bg-green-500" : "bg-purple-600"
               }`}
               style={{
                 width: `${Math.min((totalDaySeconds / EIGHT_HOURS) * 100, 100)}%`,
               }}
             />
+            {/* Overtime indicator - pulsing glow effect */}
+            {overtime > 0 && (
+              <div className="absolute inset-0 bg-green-400/30 animate-pulse rounded-full" />
+            )}
+          </div>
+          {/* Progress milestones */}
+          <div className="flex justify-between mt-1 text-[10px] text-gray-300">
+            <span>0h</span>
+            <span>4h</span>
+            <span>8h</span>
           </div>
         </div>
 

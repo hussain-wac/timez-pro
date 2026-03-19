@@ -108,6 +108,7 @@ class TaskCreate(BaseModel):
     priority: str = "medium"  # low, medium, high, urgent
     due_date: Optional[datetime] = None
     status: str = "todo"
+    assignee_ids: Optional[List[int]] = None  # User IDs to assign task to (if empty, assigns to all project members)
 
 
 class TaskUpdate(BaseModel):

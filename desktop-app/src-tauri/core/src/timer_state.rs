@@ -81,17 +81,50 @@ impl TimerStateInner {
         self.running_task_id.is_some()
     }
 
+    /// Maximum reasonable elapsed time for a single session (24 hours in seconds).
+    /// Used to detect clock anomalies.
+    const MAX_SESSION_SECS: i64 = 24 * 60 * 60;
+
+    /// Maximum total elapsed time we'll track (1 year in seconds).
+    /// Prevents overflow issues with very long-running timers.
+    const MAX_TOTAL_ELAPSED_SECS: i64 = 365 * 24 * 60 * 60;
+
     /// Get total elapsed for a running task (base + live)
+    ///
+    /// This method includes protection against:
+    /// - Clock drift (negative values)
+    /// - Clock jumps (unreasonably large values)
+    /// - Integer overflow (saturating arithmetic)
     pub fn get_total_elapsed(&self, task_id: i64) -> i64 {
         let base = self.base_elapsed.get(&task_id).copied().unwrap_or(0);
         let live = if self.running_task_id == Some(task_id) {
             self.timer_started_at
-                .map(|started| (Utc::now() - started).num_seconds().max(0))
+                .map(|started| {
+                    let elapsed = (Utc::now() - started).num_seconds();
+                    // Protect against negative values (clock went backward)
+                    if elapsed < 0 {
+                        return 0;
+                    }
+                    // Protect against clock jump forward (NTP sync, suspend/resume)
+                    // If live elapsed exceeds 24 hours, something is wrong
+                    if elapsed > Self::MAX_SESSION_SECS {
+                        eprintln!(
+                            "[timer] Warning: Detected clock anomaly - live elapsed {} exceeds max session time",
+                            elapsed
+                        );
+                        // Return the max session time as a safe fallback
+                        return Self::MAX_SESSION_SECS;
+                    }
+                    elapsed
+                })
                 .unwrap_or(0)
         } else {
             0
         };
-        base + live
+        // Use saturating_add to prevent overflow
+        let total = base.saturating_add(live);
+        // Cap at maximum to prevent unreasonable values
+        total.min(Self::MAX_TOTAL_ELAPSED_SECS)
     }
 
     /// Called after successful sync - updates base and resets timer
@@ -112,12 +145,22 @@ impl TimerStateInner {
     }
 
     /// Get tasks with locally computed elapsed time
+    ///
+    /// Uses the same clock protection as `get_total_elapsed` to ensure consistency.
     pub fn get_tasks(&self) -> Vec<Task> {
         let now = Utc::now();
         let mut out = Vec::with_capacity(self.cached_tasks.len());
         let running_id = self.running_task_id;
         let live_elapsed = if let (Some(_), Some(started)) = (running_id, self.timer_started_at) {
-            (now - started).num_seconds().max(0)
+            let elapsed = (now - started).num_seconds();
+            // Apply same protections as get_total_elapsed
+            if elapsed < 0 {
+                0
+            } else if elapsed > Self::MAX_SESSION_SECS {
+                Self::MAX_SESSION_SECS
+            } else {
+                elapsed
+            }
         } else {
             0
         };
@@ -129,11 +172,13 @@ impl TimerStateInner {
                 .copied()
                 .unwrap_or(t.elapsed_secs);
             let is_running = running_id == Some(t.id);
+            // Use saturating_add and cap at max
+            let total = base.saturating_add(if is_running { live_elapsed } else { 0 });
             out.push(Task {
                 id: t.id,
                 name: t.name.clone(),
                 budget_secs: t.budget_secs,
-                elapsed_secs: base + if is_running { live_elapsed } else { 0 },
+                elapsed_secs: total.min(Self::MAX_TOTAL_ELAPSED_SECS),
                 running: is_running,
                 project_id: t.project_id,
                 project_name: t.project_name.clone(),
@@ -219,13 +264,29 @@ impl TimerStateInner {
     /// Stop the currently running timer locally (no API call).
     ///
     /// Returns information about the stopped timer, or `None` if no timer was running.
+    /// Includes protection against clock anomalies.
     pub fn stop_current_local(&mut self) -> Option<StopInfo> {
         let task_id = self.running_task_id?;
         let started_at = self.timer_started_at?;
 
-        let elapsed = (Utc::now() - started_at).num_seconds().max(0);
+        let raw_elapsed = (Utc::now() - started_at).num_seconds();
+        // Apply clock protections
+        let elapsed = if raw_elapsed < 0 {
+            eprintln!("[timer] Warning: Negative elapsed time detected on stop, using 0");
+            0
+        } else if raw_elapsed > Self::MAX_SESSION_SECS {
+            eprintln!(
+                "[timer] Warning: Excessive elapsed time {} detected on stop, capping at {}",
+                raw_elapsed, Self::MAX_SESSION_SECS
+            );
+            Self::MAX_SESSION_SECS
+        } else {
+            raw_elapsed
+        };
+
         let base = self.base_elapsed.entry(task_id).or_insert(0);
-        *base += elapsed;
+        // Use saturating_add to prevent overflow
+        *base = base.saturating_add(elapsed).min(Self::MAX_TOTAL_ELAPSED_SECS);
 
         self.running_task_id = None;
         self.timer_started_at = None;

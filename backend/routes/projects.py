@@ -435,13 +435,43 @@ def create_project_task(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Create a task in a project. Admin only."""
+    """Create a task in a project. Admin only.
+
+    If assignee_ids is provided, assigns only to those users (must be project members).
+    If assignee_ids is empty/None, assigns to ALL project members.
+    The first assignee is marked as primary.
+    """
     require_admin(current_user)
 
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Get all project members for validation
+    project_members = db.query(ProjectMember).filter(ProjectMember.project_id == project_id).all()
+    member_user_ids = [m.user_id for m in project_members]
+
+    # Determine which users to assign
+    if task_data.assignee_ids and len(task_data.assignee_ids) > 0:
+        # Validate that all provided user IDs are project members
+        for user_id in task_data.assignee_ids:
+            if user_id not in member_user_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"User {user_id} is not a member of this project"
+                )
+        users_to_assign = task_data.assignee_ids
+    else:
+        # Fall back to all project members
+        users_to_assign = member_user_ids
+
+    if not users_to_assign:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot create task: No project members to assign. Add members to the project first."
+        )
+
+    # Create the task
     task = Task(
         project_id=project_id,
         name=task_data.name,
@@ -455,6 +485,36 @@ def create_project_task(
     db.add(task)
     db.commit()
     db.refresh(task)
+
+    assignees = []
+
+    # First user in the list is primary
+    primary_user_id = users_to_assign[0]
+
+    for user_id in users_to_assign:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            continue
+
+        is_primary = (user_id == primary_user_id)
+
+        assignment = TaskAssignment(
+            task_id=task.id,
+            user_id=user_id,
+            assigned_by=current_user.id,
+            is_primary=is_primary,
+        )
+        db.add(assignment)
+        db.commit()
+        db.refresh(assignment)
+
+        assignees.append(TaskAssigneeInfo(
+            id=assignment.id,
+            user_id=assignment.user_id,
+            user=get_user_info(user),
+            is_primary=assignment.is_primary,
+            assigned_at=assignment.assigned_at,
+        ))
 
     return TaskWithAssignees(
         id=task.id,
@@ -470,7 +530,7 @@ def create_project_task(
         updated_at=task.updated_at,
         total_tracked_seconds=0,
         remaining_seconds=task.max_hours * 3600,
-        assignees=[],
+        assignees=assignees,
         project_name=project.name,
         project_color=project.color,
     )
