@@ -325,7 +325,9 @@ fn start_google_auth(
 
         match result {
             Ok(response) => {
-                let _ = ipc::send_auth_login(&response.access_token);
+                // Store the access token in the auth service using ValidateToken
+                // (not GoogleLogin, which expects a Google ID token)
+                let _ = ipc::send_store_token(&response.access_token);
                 let _ = app_handle.emit("auth-success", &response);
             }
             Err(e) => {

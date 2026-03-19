@@ -397,16 +397,18 @@ pub fn decode_unit(data: ResponseData) -> Result<(), String> {
 }
 
 // ============================================================================
-// Direct auth login (for deep link handler)
+// Direct auth functions (for deep link handler / post-OAuth storage)
 // ============================================================================
 
-pub fn send_auth_login(google_id_token: &str) -> Result<AuthResponse, String> {
+/// Store the access token in the auth service after OAuth completes.
+/// Uses ValidateToken which correctly validates via /api/auth/me (not /api/auth/google).
+pub fn send_store_token(access_token: &str) -> Result<AuthUser, String> {
     let mut stream = try_connect(ServiceKind::Auth)?;
 
     let envelope = RequestEnvelope {
         token: REQUEST_TOKEN.to_string(),
-        request: Request::GoogleLogin {
-            google_id_token: google_id_token.to_string(),
+        request: Request::ValidateToken {
+            token: access_token.to_string(),
         },
     };
     let payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
@@ -427,7 +429,7 @@ pub fn send_auth_login(google_id_token: &str) -> Result<AuthResponse, String> {
     }
 
     match response.data {
-        Some(ResponseData::AuthResponse(auth_response)) => Ok(auth_response),
+        Some(ResponseData::AuthUser(user)) => Ok(user),
         _ => Err("Unexpected service response".to_string()),
     }
 }
