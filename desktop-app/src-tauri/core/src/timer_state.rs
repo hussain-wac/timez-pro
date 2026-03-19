@@ -131,7 +131,17 @@ impl TimerStateInner {
 
     /// Sync cached data from the external API
     pub fn sync_from_api(&mut self, token: &Option<String>) {
+        // Don't sync if no token - this would clear all tasks
+        if token.is_none() {
+            return;
+        }
+
         if let Ok(tasks) = api::list_tasks(token) {
+            // Don't replace tasks with empty list (could be a temporary API issue)
+            if tasks.is_empty() && !self.cached_tasks.is_empty() {
+                return;
+            }
+
             // Update base_elapsed for non-running tasks only
             // Running task's base_elapsed is managed by mark_synced()
             for t in &tasks {
