@@ -310,6 +310,15 @@ fn resolve_service_binary<R: tauri::Runtime>(
         if candidate.exists() {
             return Ok(candidate);
         }
+
+        #[cfg(windows)]
+        {
+            // Support legacy bundles where service binaries were copied without ".exe".
+            let legacy_candidate = parent.join(kind.binary_name());
+            if legacy_candidate.exists() {
+                return Ok(legacy_candidate);
+            }
+        }
     }
 
     let resource_dir = app_handle
@@ -324,6 +333,15 @@ fn resolve_service_binary<R: tauri::Runtime>(
 
     if bundled.exists() {
         return Ok(bundled);
+    }
+
+    #[cfg(windows)]
+    {
+        // Support legacy bundles where service resources were named without ".exe".
+        let legacy_bundled = resource_dir.join(kind.binary_name());
+        if legacy_bundled.exists() {
+            return Ok(legacy_bundled);
+        }
     }
 
     Err(format!(

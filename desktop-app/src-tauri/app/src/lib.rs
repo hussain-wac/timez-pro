@@ -30,10 +30,14 @@ pub fn run() {
                 app.deep_link().register("timezpro").ok();
             }
 
-            instance::spawn_show_listener(app.handle().clone())?;
+            if let Err(err) = instance::spawn_show_listener(app.handle().clone()) {
+                eprintln!("[startup] Instance show listener unavailable: {err}");
+            }
 
             let service = ServiceManager::new();
-            service.ensure_running(&app.handle())?;
+            if let Err(err) = service.ensure_running(&app.handle()) {
+                eprintln!("[startup] Background services failed to start: {err}");
+            }
             app.manage(service);
 
             let show_item = MenuItemBuilder::with_id("show", "Show Window").build(app)?;
