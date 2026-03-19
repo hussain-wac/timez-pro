@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use timez_core::format_duration;
-use timez_core::models::{MidnightResetEvent, Task, TimerStatus};
+use timez_core::models::{MidnightResetEvent, Project, Task, TimerStatus};
 use timez_core::protocol::{Request, ResponseData};
 use timez_core::timer_state::TimerStateInner;
+use timez_core::api;
 
 use crate::auth_store;
 use crate::runtime;
@@ -59,6 +60,14 @@ fn handle_request(
         Request::CheckMidnightReset => Ok(ResponseData::MidnightReset(check_midnight_reset(
             timer_state,
         )?)),
+        Request::ListProjects => Ok(ResponseData::Projects(list_projects()?)),
+        Request::ListProjectTasks { project_id } => {
+            Ok(ResponseData::Tasks(list_project_tasks(timer_state, project_id)?))
+        }
+        Request::SetActiveProject { .. } => {
+            // Active project is tracked on the frontend, this is a no-op
+            Ok(ResponseData::Unit)
+        }
         Request::Shutdown => Ok(ResponseData::Unit),
         _ => Err("Unsupported request for task service".to_string()),
     }
@@ -140,6 +149,45 @@ fn check_midnight_reset(
         })),
         None => Ok(None),
     }
+}
+
+fn list_projects() -> Result<Vec<Project>, String> {
+    let token = auth_store::read_token();
+    api::list_projects(&token)
+}
+
+fn list_project_tasks(
+    timer_state: &Arc<Mutex<TimerStateInner>>,
+    project_id: i64,
+) -> Result<Vec<Task>, String> {
+    let token = auth_store::read_token();
+    let timer = timer_state.lock().map_err(|err| err.to_string())?;
+
+    // Get tasks from API for this project
+    let mut tasks = api::list_project_tasks(project_id, &token)?;
+
+    // Merge with local timer state (running status, live elapsed)
+    let running_id = timer.running_task_id;
+    let live_elapsed = if let (Some(_), Some(started)) = (running_id, timer.timer_started_at) {
+        (chrono::Utc::now() - started).num_seconds().max(0)
+    } else {
+        0
+    };
+
+    for task in &mut tasks {
+        // Check if this task is running locally
+        let is_running = running_id == Some(task.id);
+        task.running = is_running;
+
+        // Add local elapsed time tracking
+        if let Some(base) = timer.base_elapsed.get(&task.id) {
+            task.elapsed_secs = *base + if is_running { live_elapsed } else { 0 };
+        } else if is_running {
+            task.elapsed_secs += live_elapsed;
+        }
+    }
+
+    Ok(tasks)
 }
 
 fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {

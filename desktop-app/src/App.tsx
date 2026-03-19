@@ -11,12 +11,21 @@ interface IdleEvent {
   tracking_active: boolean;
 }
 
+interface Project {
+  id: number;
+  name: string;
+  color: string | null;
+  task_count: number;
+}
+
 interface Task {
   id: number;
   name: string;
   budget_secs: number;
   elapsed_secs: number;
   running: boolean;
+  project_id: number | null;
+  project_name: string | null;
 }
 
 const EIGHT_HOURS = 8 * 60 * 60;
@@ -57,8 +66,11 @@ async function showDesktopNotification(title: string, body: string) {
 
 function App() {
   const { user, logout } = useAuth();
+  const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  const [projectSearch, setProjectSearch] = useState("");
   const [taskSearch, setTaskSearch] = useState("");
   const [idleEvent, setIdleEvent] = useState<IdleEvent | null>(null);
   const [idleTaskId, setIdleTaskId] = useState<number | null>(null);
@@ -69,14 +81,37 @@ function App() {
   const [crashRecoveredTaskId, setCrashRecoveredTaskId] = useState<number | null>(null);
   const [syncNotification, setSyncNotification] = useState<string | null>(null);
 
-  const refreshTasks = useCallback(async () => {
+  const refreshProjects = useCallback(async () => {
     try {
-      const result = await invoke<Task[]>("list_tasks");
-      setTasks(result);
+      const result = await invoke<Project[]>("list_projects");
+      setProjects(result);
+      // Auto-select first project if none selected
+      if (result.length > 0 && selectedProjectId === null) {
+        setSelectedProjectId(result[0].id);
+      }
     } catch {
       // API may be unreachable
     }
-  }, []);
+  }, [selectedProjectId]);
+
+  const refreshTasks = useCallback(async () => {
+    try {
+      if (selectedProjectId !== null) {
+        const result = await invoke<Task[]>("list_project_tasks", { projectId: selectedProjectId });
+        setTasks(result);
+      } else {
+        // Fall back to all tasks if no project selected
+        const result = await invoke<Task[]>("list_tasks");
+        setTasks(result);
+      }
+    } catch {
+      // API may be unreachable
+    }
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    refreshProjects();
+  }, [refreshProjects]);
 
   useEffect(() => {
     refreshTasks();
@@ -258,10 +293,15 @@ function App() {
     setIdleTaskId(null);
   };
 
+  const filteredProjects = projects.filter((p) =>
+    p.name.toLowerCase().includes(projectSearch.toLowerCase()),
+  );
+
   const filteredTasks = tasks.filter((t) =>
     t.name.toLowerCase().includes(taskSearch.toLowerCase()),
   );
 
+  const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const selectedTask = tasks.find((t) => t.id === selectedTaskId);
   const totalDaySeconds = tasks.reduce((sum, t) => sum + t.elapsed_secs, 0);
 
@@ -273,11 +313,12 @@ function App() {
           {syncNotification}
         </div>
       )}
-      {/* Left sidebar */}
+
+      {/* Left Panel - Project Selector */}
       <div className="w-72 bg-white border-r border-gray-200 flex flex-col">
         {/* User profile */}
         {user && (
-          <div className="flex items-center gap-3 px-6 pt-4 pb-3 border-b border-gray-200">
+          <div className="flex items-center gap-3 px-4 pt-4 pb-3 border-b border-gray-200">
             {user.picture ? (
               <img
                 src={user.picture}
@@ -319,17 +360,14 @@ function App() {
         )}
 
         {/* Today's total */}
-        <div className="px-6 pt-6 pb-4">
+        <div className="px-4 pt-4 pb-3 border-b border-gray-200">
           <div className="text-xs uppercase tracking-wider text-gray-400 mb-1">
-            Total Run Time
+            Today's Total
           </div>
-          <div className="text-4xl font-mono font-semibold text-black">
+          <div className="text-2xl font-mono font-semibold text-black">
             {formatHms(totalDaySeconds)}
           </div>
-          <div className="text-xs text-gray-400 mt-1">
-            / {formatHms(EIGHT_HOURS)}
-          </div>
-          <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden">
+          <div className="mt-2 h-1.5 bg-gray-200 rounded-full overflow-hidden">
             <div
               className={`h-full rounded-full transition-all duration-500 ${
                 totalDaySeconds >= EIGHT_HOURS ? "bg-red-500" : "bg-purple-600"
@@ -341,44 +379,113 @@ function App() {
           </div>
         </div>
 
-        {/* Per-task breakdown */}
-        <div className="px-6 pb-4 flex-1 overflow-y-auto">
-          <div className="text-xs uppercase tracking-wider text-gray-400 mb-2">
-            Task Breakdown
+        {/* Project search */}
+        <div className="px-4 py-3">
+          <div className="relative">
+            <svg
+              className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+            <input
+              type="text"
+              placeholder="Search Projects"
+              value={projectSearch}
+              onChange={(e) => setProjectSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-purple-500 focus:border-purple-500"
+            />
           </div>
-          <div className="space-y-2">
-            {tasks
-              .filter((t) => t.elapsed_secs > 0)
-              .map((t) => (
-                <div
-                  key={t.id}
-                  className="flex items-center justify-between text-xs"
-                >
-                  <span
-                    className={`truncate mr-2 max-w-[140px] ${t.running ? "text-purple-700 font-semibold" : "text-gray-600"}`}
-                  >
-                    {t.name}
-                  </span>
-                  <span
-                    className={`font-mono shrink-0 ${t.running ? "text-purple-700 font-semibold" : "text-gray-800"}`}
-                  >
-                    {formatHms(t.elapsed_secs)}
+        </div>
+
+        {/* Project list */}
+        <div className="flex-1 overflow-y-auto">
+          {filteredProjects.map((project) => {
+            const isSelected = project.id === selectedProjectId;
+            return (
+              <div
+                key={project.id}
+                onClick={() => {
+                  setSelectedProjectId(project.id);
+                  setTaskSearch("");
+                }}
+                className={`flex items-center justify-between px-4 py-3 cursor-pointer transition-colors ${
+                  isSelected
+                    ? "bg-purple-900 text-white"
+                    : "hover:bg-gray-50"
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className={`w-2 h-2 rounded-full shrink-0 ${
+                      project.color ? "" : isSelected ? "bg-purple-300" : "bg-purple-500"
+                    }`}
+                    style={project.color ? { backgroundColor: project.color } : undefined}
+                  />
+                  <span className={`text-sm truncate ${isSelected ? "text-white" : "text-gray-800"}`}>
+                    {project.name}
                   </span>
                 </div>
-              ))}
-            {tasks.every((t) => t.elapsed_secs === 0) && (
-              <div className="text-xs text-gray-400 italic">
-                No time tracked yet
+                <span
+                  className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${
+                    isSelected
+                      ? "bg-purple-700 text-purple-200"
+                      : "bg-gray-100 text-gray-500"
+                  }`}
+                >
+                  {project.task_count}
+                </span>
               </div>
-            )}
-          </div>
+            );
+          })}
+          {filteredProjects.length === 0 && (
+            <div className="px-4 py-8 text-center text-sm text-gray-400">
+              No projects found
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Right panel - Tasks */}
+      {/* Right Panel - Task List */}
       <div className="flex-1 flex flex-col bg-gray-50">
-        {/* Task search */}
+        {/* Header with project name */}
         <div className="px-4 py-3 bg-white border-b border-gray-200">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-gray-800">
+              {selectedProject?.name || "All Tasks"}
+            </h2>
+            <button
+              onClick={async () => {
+                await refreshProjects();
+                await refreshTasks();
+              }}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-purple-600 transition-colors"
+              title="Refresh"
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
+              </svg>
+              Refresh
+            </button>
+          </div>
+          {/* Task search */}
           <div className="relative">
             <svg
               className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
@@ -482,6 +589,11 @@ function App() {
               </div>
             );
           })}
+          {filteredTasks.length === 0 && (
+            <div className="px-4 py-8 text-center text-sm text-gray-400">
+              {selectedProjectId ? "No tasks in this project" : "No tasks available"}
+            </div>
+          )}
         </div>
 
         {/* Task detail footer */}
@@ -507,43 +619,14 @@ function App() {
         {/* Status bar */}
         <div className="flex items-center justify-between px-4 py-2 bg-gray-100 border-t border-gray-200 text-xs text-gray-400">
           <span>
-            Last updated on {new Date().toLocaleDateString("en-GB")},
+            Last updated on {new Date().toLocaleDateString("en-GB")},{" "}
             {new Date().toLocaleTimeString("en-GB")}
           </span>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={async () => {
-                try {
-                  const result = await invoke<Task[]>("refresh_tasks");
-                  setTasks(result);
-                } catch {
-                  // API may be unreachable
-                }
-              }}
-              className="flex items-center gap-1 text-gray-500 hover:text-purple-600 transition-colors"
-              title="Refresh tasks from server"
-            >
-              <svg
-                className="w-3.5 h-3.5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                />
-              </svg>
-              Refresh
-            </button>
-            <span>v.1.0.0</span>
-          </div>
+          <span>v.1.0.0</span>
         </div>
       </div>
 
-      {/* Quit Confirmation Modal */}
+      {/* Idle Time Alert Modal */}
       {idleEvent && (
         <div className="fixed inset-0 bg-black/30 flex items-start justify-center pt-24 z-50">
           <div className="w-full max-w-md overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl">
@@ -701,8 +784,8 @@ function App() {
 
             <div className="bg-amber-50 border border-amber-200 rounded-md px-4 py-3 mb-4">
               <p className="text-sm text-amber-800">
-                The recorded time has been verified against the server. 
-                Any discrepancy between local and server timestamps has been corrected 
+                The recorded time has been verified against the server.
+                Any discrepancy between local and server timestamps has been corrected
                 to ensure accurate time tracking.
                 {crashRecoveredTaskId && (
                   <span className="block mt-2 font-medium">

@@ -6,11 +6,13 @@ import {
   LogOut,
   Settings,
   Clock,
-  Calendar
+  Calendar,
+  FolderKanban
 } from 'lucide-react';
 
 const menuItems = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { path: '/projects', label: 'Projects', icon: FolderKanban },
   { path: '/employees', label: 'Employees', icon: Users },
   { path: '/kanban', label: 'Kanban Board', icon: Kanban },
   { path: '/daily', label: 'Daily Summary', icon: Calendar },

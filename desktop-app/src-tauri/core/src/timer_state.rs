@@ -135,6 +135,8 @@ impl TimerStateInner {
                 budget_secs: t.budget_secs,
                 elapsed_secs: base + if is_running { live_elapsed } else { 0 },
                 running: is_running,
+                project_id: t.project_id,
+                project_name: t.project_name.clone(),
             });
         }
 
@@ -170,6 +172,8 @@ impl TimerStateInner {
                     budget_secs: t.budget_secs,
                     elapsed_secs: 0, // We use base_elapsed map instead
                     running: false,  // We track running state locally
+                    project_id: t.project_id,
+                    project_name: t.project_name,
                 })
                 .collect();
             self.last_sync_at = Utc::now();

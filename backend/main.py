@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import engine, Base
-from routes import tasks, timer, reports, auth, dashboard
+from routes import tasks, timer, reports, auth, dashboard, projects
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -14,7 +14,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Time Tracker API",
     description="A time-tracking application API similar to Hubstaff",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 # CORS configuration
@@ -29,6 +29,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(auth.router)
+app.include_router(projects.router)  # Projects before tasks for proper route ordering
 app.include_router(tasks.router)
 app.include_router(timer.router)
 app.include_router(reports.router)
@@ -37,4 +38,4 @@ app.include_router(dashboard.router)
 
 @app.get("/")
 def root():
-    return {"message": "Time Tracker API", "docs": "/docs"}
+    return {"message": "Time Tracker API", "version": "2.0.0", "docs": "/docs"}

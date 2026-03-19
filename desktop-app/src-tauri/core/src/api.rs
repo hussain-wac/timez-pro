@@ -3,7 +3,7 @@ use std::net::TcpListener;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::models::{AuthResponse, Task};
+use crate::models::{AuthResponse, Project, Task};
 use serde::Deserialize;
 
 const BASE_URL: &str = "http://192.168.3.163:8000";
@@ -57,6 +57,16 @@ pub struct ApiTask {
     pub id: i64,
     pub name: String,
     pub max_hours: Option<f64>,
+    pub project_id: Option<i64>,
+    pub project_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApiProject {
+    pub id: i64,
+    pub name: String,
+    pub color: Option<String>,
+    pub task_count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +156,90 @@ pub fn list_tasks(token: &Option<String>) -> Result<Vec<Task>, String> {
                 budget_secs: (t.max_hours.unwrap_or(8.0) * 3600.0) as i64,
                 elapsed_secs: summary_elapsed,
                 running: false,
+                project_id: t.project_id,
+                project_name: t.project_name,
+            }
+        })
+        .collect();
+
+    Ok(tasks)
+}
+
+/// Fetches the list of projects the user is allocated to.
+///
+/// Returns an empty list if no token is provided (not logged in).
+pub fn list_projects(token: &Option<String>) -> Result<Vec<Project>, String> {
+    let token = match token.as_ref() {
+        Some(t) => t,
+        None => return Ok(vec![]),
+    };
+
+    let header = format!("Bearer {}", token);
+    let resp = ureq::get(&format!("{}/api/me/projects", BASE_URL))
+        .set("Authorization", &header)
+        .call()
+        .map_err(|e| format!("API error: {}", e))?;
+
+    let api_projects: Vec<ApiProject> = resp
+        .into_json()
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let projects = api_projects
+        .into_iter()
+        .map(|p| Project {
+            id: p.id,
+            name: p.name,
+            color: p.color,
+            task_count: p.task_count.unwrap_or(0),
+        })
+        .collect();
+
+    Ok(projects)
+}
+
+/// Fetches tasks for a specific project.
+///
+/// Returns an empty list if no token is provided (not logged in).
+pub fn list_project_tasks(project_id: i64, token: &Option<String>) -> Result<Vec<Task>, String> {
+    let token = match token.as_ref() {
+        Some(t) => t,
+        None => return Ok(vec![]),
+    };
+
+    let header = format!("Bearer {}", token);
+    let resp = ureq::get(&format!("{}/api/projects/{}/tasks", BASE_URL, project_id))
+        .set("Authorization", &header)
+        .call()
+        .map_err(|e| format!("API error: {}", e))?;
+
+    let api_tasks: Vec<ApiTask> = resp
+        .into_json()
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    // Get elapsed times from daily summary
+    let summary = get_summary(token).unwrap_or_else(|_| SummaryReport {
+        tasks: vec![],
+        total_seconds: 0,
+    });
+
+    let summary_map: std::collections::HashMap<i64, i64> = summary
+        .tasks
+        .iter()
+        .map(|st| (st.task_id, st.total_seconds))
+        .collect();
+
+    let tasks = api_tasks
+        .into_iter()
+        .map(|t| {
+            let summary_elapsed = summary_map.get(&t.id).copied().unwrap_or(0);
+            Task {
+                id: t.id,
+                name: t.name,
+                budget_secs: (t.max_hours.unwrap_or(8.0) * 3600.0) as i64,
+                elapsed_secs: summary_elapsed,
+                running: false,
+                project_id: t.project_id,
+                project_name: t.project_name,
             }
         })
         .collect();

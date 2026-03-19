@@ -1,22 +1,28 @@
 import { useState, useEffect } from 'react';
-import { Users, ListTodo, Activity, Clock } from 'lucide-react';
+import { Users, ListTodo, Activity, Clock, FolderKanban, ArrowRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { dashboardApi } from '../api';
 import StatCard from '../components/StatCard';
+import ProjectCard from '../components/ProjectCard';
 import { formatHours, formatDuration } from '../utils/format';
 
 export default function DashboardHome() {
+  const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = async () => {
     try {
-      const [statsData, usersData] = await Promise.all([
+      const [statsData, usersData, projectsData] = await Promise.all([
         dashboardApi.getStats(),
         dashboardApi.getUsersStatus(),
+        dashboardApi.getProjects(),
       ]);
       setStats(statsData);
       setUsers(usersData);
+      setProjects(projectsData);
     } catch (err) {
       console.error(err);
     } finally {
@@ -39,6 +45,7 @@ export default function DashboardHome() {
   }
 
   const workingUsers = users.filter(u => u.running);
+  const recentProjects = projects.slice(0, 4);
 
   return (
     <div className="space-y-8">
@@ -48,35 +55,58 @@ export default function DashboardHome() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard 
-          title="Total Employees" 
+        <StatCard
+          title="Total Employees"
           value={stats?.total_users || 0}
           icon={Users}
           color="text-blue-600"
           iconBg="bg-blue-50"
         />
-        <StatCard 
-          title="Total Tasks" 
+        <StatCard
+          title="Total Tasks"
           value={stats?.total_tasks || 0}
           icon={ListTodo}
           color="text-purple-600"
           iconBg="bg-purple-50"
         />
-        <StatCard 
-          title="Currently Working" 
+        <StatCard
+          title="Currently Working"
           value={stats?.currently_working || 0}
           icon={Activity}
           color="text-green-600"
           iconBg="bg-green-50"
         />
-        <StatCard 
-          title="Today's Total" 
+        <StatCard
+          title="Today's Total"
           value={formatHours(stats?.today_total_seconds || 0)}
           icon={Clock}
           color="text-orange-600"
           iconBg="bg-orange-50"
         />
       </div>
+
+      {projects.length > 0 && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+              <FolderKanban className="w-5 h-5 text-blue-600" />
+              Recent Projects
+            </h2>
+            <button
+              onClick={() => navigate('/projects')}
+              className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors"
+            >
+              View All
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {recentProjects.map(project => (
+              <ProjectCard key={project.id} project={project} />
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="p-6 border-b border-gray-100">

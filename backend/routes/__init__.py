@@ -1,1 +1,1 @@
-from . import tasks, timer, reports, auth, dashboard
+from . import tasks, timer, reports, auth, dashboard, projects

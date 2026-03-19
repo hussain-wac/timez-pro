@@ -73,4 +73,22 @@ export const dashboardApi = {
     if (date) params.append('date', date);
     return api.get(`/api/dashboard/user-daily-summary?${params.toString()}`);
   },
+
+  // Project Management
+  getProjects: () => api.get('/api/dashboard/projects'),
+  createProject: (data) => api.post('/api/dashboard/projects', data),
+  getProject: (id) => api.get(`/api/dashboard/projects/${id}`),
+  updateProject: (id, data) => api.post(`/api/dashboard/projects/${id}`, data),
+  deleteProject: (id) => api.post(`/api/dashboard/projects/${id}/delete`, {}),
+
+  // Project Members
+  getProjectMembers: (projectId) => api.get(`/api/dashboard/projects/${projectId}/members`),
+  addProjectMembers: (projectId, userIds) => api.post(`/api/dashboard/projects/${projectId}/members`, { user_ids: userIds }),
+  removeProjectMember: (projectId, userId) => api.post(`/api/dashboard/projects/${projectId}/members/remove`, { user_id: userId }),
+
+  // Project Tasks
+  getProjectTasks: (projectId) => api.get(`/api/dashboard/projects/${projectId}/tasks`),
+  createProjectTask: (projectId, data) => api.post(`/api/dashboard/projects/${projectId}/tasks`, data),
+  assignTaskToUsers: (taskId, userIds) => api.post(`/api/dashboard/tasks/${taskId}/assign-users`, { user_ids: userIds }),
+  unassignTaskUser: (taskId, userId) => api.post(`/api/dashboard/tasks/${taskId}/unassign`, { user_id: userId }),
 };

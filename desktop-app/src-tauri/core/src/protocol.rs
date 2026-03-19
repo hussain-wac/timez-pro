@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Task, TimerStatus};
+use crate::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Project, Task, TimerStatus};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RequestEnvelope {
@@ -26,6 +26,12 @@ pub enum Request {
     ResolveIdleEvent,
     /// Check if midnight has passed and get reset event if it occurred
     CheckMidnightReset,
+    /// List all projects the user is allocated to
+    ListProjects,
+    /// List tasks for a specific project
+    ListProjectTasks { project_id: i64 },
+    /// Set the currently active project for filtering
+    SetActiveProject { project_id: Option<i64> },
     Shutdown,
 }
 
@@ -46,5 +52,7 @@ pub enum ResponseData {
     IdleEvent(Option<IdleEvent>),
     /// Midnight reset event (None if no reset occurred)
     MidnightReset(Option<MidnightResetEvent>),
+    /// List of projects
+    Projects(Vec<Project>),
     Unit,
 }

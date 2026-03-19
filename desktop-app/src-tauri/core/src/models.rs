@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+/// A project that contains tasks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: i64,
+    pub name: String,
+    pub color: Option<String>,
+    pub task_count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: i64,
@@ -7,6 +16,10 @@ pub struct Task {
     pub budget_secs: i64,
     pub elapsed_secs: i64,
     pub running: bool,
+    /// Project this task belongs to
+    pub project_id: Option<i64>,
+    /// Project name (for display)
+    pub project_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

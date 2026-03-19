@@ -4,6 +4,8 @@ import Login from './Login';
 import { dashboardApi } from './api';
 import Layout from './components/Layout';
 import DashboardHome from './pages/DashboardHome';
+import Projects from './pages/Projects';
+import ProjectDetail from './pages/ProjectDetail';
 import Employees from './pages/Employees';
 import Kanban from './pages/Kanban';
 import Daily from './pages/Daily';
@@ -74,6 +76,8 @@ function App() {
     <Layout user={user} onLogout={handleLogout}>
       <Routes>
         <Route path="/" element={<DashboardHome />} />
+        <Route path="/projects" element={<Projects />} />
+        <Route path="/projects/:id" element={<ProjectDetail />} />
         <Route path="/employees" element={<Employees />} />
         <Route path="/employees/:userId" element={<Kanban />} />
         <Route path="/daily" element={<Daily />} />

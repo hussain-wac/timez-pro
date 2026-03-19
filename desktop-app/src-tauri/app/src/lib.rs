@@ -9,7 +9,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, State};
 use timez_core::api;
-use timez_core::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, Task, TimerStatus};
+use timez_core::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, Project, Task, TimerStatus};
 use timez_core::protocol::Request;
 
 const POLL_INTERVAL_SECS: u64 = 2;
@@ -142,6 +142,8 @@ pub fn run() {
             validate_token,
             logout,
             quit_app,
+            list_projects,
+            list_project_tasks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -315,6 +317,16 @@ fn resolve_idle_event(service: State<'_, ServiceManager>) -> Result<(), String> 
 #[tauri::command]
 fn refresh_tasks(service: State<'_, ServiceManager>) -> Result<Vec<Task>, String> {
     ipc::decode_tasks(request(service, Request::RefreshTasks)?)
+}
+
+#[tauri::command]
+fn list_projects(service: State<'_, ServiceManager>) -> Result<Vec<Project>, String> {
+    ipc::decode_projects(request(service, Request::ListProjects)?)
+}
+
+#[tauri::command]
+fn list_project_tasks(project_id: i64, service: State<'_, ServiceManager>) -> Result<Vec<Task>, String> {
+    ipc::decode_tasks(request(service, Request::ListProjectTasks { project_id })?)
 }
 
 #[tauri::command]

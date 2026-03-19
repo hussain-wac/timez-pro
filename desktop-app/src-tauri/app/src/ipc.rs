@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
-use timez_core::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Task, TimerStatus};
+use timez_core::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Project, Task, TimerStatus};
 use timez_core::protocol::{Request, RequestEnvelope, ResponseData, ResponseEnvelope};
 
 const REQUEST_TOKEN: &str = "timez-local";
@@ -347,7 +347,10 @@ fn route_request(request: &Request) -> ServiceKind {
         | Request::AddIdleTime { .. }
         | Request::DiscardIdleTime { .. }
         | Request::RefreshTasks
-        | Request::CheckMidnightReset => ServiceKind::Task,
+        | Request::CheckMidnightReset
+        | Request::ListProjects
+        | Request::ListProjectTasks { .. }
+        | Request::SetActiveProject { .. } => ServiceKind::Task,
         Request::GetActivityStats => ServiceKind::Tracker,
         Request::GetIdleEvent | Request::ResolveIdleEvent => ServiceKind::IdleTime,
         Request::Shutdown => ServiceKind::Quit,
@@ -410,6 +413,13 @@ pub fn decode_unit(data: ResponseData) -> Result<(), String> {
 pub fn decode_midnight_reset(data: ResponseData) -> Result<Option<MidnightResetEvent>, String> {
     match data {
         ResponseData::MidnightReset(event) => Ok(event),
+        _ => Err("Unexpected service response".to_string()),
+    }
+}
+
+pub fn decode_projects(data: ResponseData) -> Result<Vec<Project>, String> {
+    match data {
+        ResponseData::Projects(projects) => Ok(projects),
         _ => Err("Unexpected service response".to_string()),
     }
 }
