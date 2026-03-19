@@ -13,8 +13,6 @@ use std::os::unix::net::UnixListener;
 #[cfg(unix)]
 use std::path::Path;
 
-#[cfg(windows)]
-use std::net::TcpListener;
 
 #[cfg(unix)]
 const INSTANCE_SOCKET_PATH: &str = "/tmp/timez-app.sock";

@@ -77,20 +77,16 @@ where
 
     // Try binding with retries in case of port conflicts from crashed services
     let listener = {
-        let mut last_error = None;
         let mut attempts = 0;
         loop {
             match TcpListener::bind(addr) {
                 Ok(l) => break l,
                 Err(e) => {
                     attempts += 1;
-                    last_error = Some(e);
                     if attempts >= 3 {
                         return Err(format!(
                             "Failed to bind {} after {} attempts: {}",
-                            addr,
-                            attempts,
-                            last_error.unwrap()
+                            addr, attempts, e
                         ));
                     }
                     // Wait briefly before retry
@@ -257,8 +253,6 @@ fn spawn_parent_watchdog(parent_pid: Option<u32>, _socket_path: Option<PathBuf>,
     };
 
     std::thread::spawn(move || {
-        use std::ptr::null_mut;
-
         // Windows API constants
         const SYNCHRONIZE: u32 = 0x00100000;
         const WAIT_OBJECT_0: u32 = 0;
