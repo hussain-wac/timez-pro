@@ -72,7 +72,7 @@ export default function MemberManager({ projectId }) {
     setRemoving(true);
     setError(null);
     try {
-      await dashboardApi.removeProjectMember(projectId, memberToRemove.id);
+      await dashboardApi.removeProjectMember(projectId, memberToRemove.user_id);
       if (isMountedRef.current) {
         await fetchMembers();
         setShowRemoveConfirm(false);
@@ -120,7 +120,7 @@ export default function MemberManager({ projectId }) {
   }, [selectedUsers, projectId, fetchMembers]);
 
   const availableUsers = allUsers.filter(
-    user => !members.some(member => member.id === user.id)
+    user => !members.some(member => member.user_id === user.id)
   );
 
   const toggleUserSelection = useCallback((userId) => {
@@ -180,19 +180,24 @@ export default function MemberManager({ projectId }) {
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-md bg-blue-500 flex items-center justify-center overflow-hidden flex-shrink-0">
-                        {member.picture ? (
-                          <img src={member.picture} alt={member.name} className="w-full h-full object-cover" />
+                        {member.user?.picture ? (
+                          <img src={member.user.picture} alt={member.user?.name || ''} className="w-full h-full object-cover" />
                         ) : (
                           <span className="text-white text-xs font-semibold">
-                            {member.name?.charAt(0).toUpperCase() || '?'}
+                            {member.user?.name?.charAt(0).toUpperCase() || member.user?.email?.charAt(0).toUpperCase() || '?'}
                           </span>
                         )}
                       </div>
-                      <span className="text-sm font-medium text-gray-900">{member.name}</span>
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-gray-900">{member.user?.name || 'Unknown'}</span>
+                        {member.role === 'lead' && (
+                          <span className="text-xs text-blue-600">Lead</span>
+                        )}
+                      </div>
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="text-sm text-gray-600">{member.email}</span>
+                    <span className="text-sm text-gray-600">{member.user?.email || '-'}</span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right">
                     <button
@@ -225,7 +230,7 @@ export default function MemberManager({ projectId }) {
                 </div>
               </div>
               <p className="text-sm text-gray-600 mb-4">
-                Are you sure you want to remove <span className="font-medium">{memberToRemove.name}</span> from this project?
+                Are you sure you want to remove <span className="font-medium">{memberToRemove.user?.name || memberToRemove.user?.email || 'this member'}</span> from this project?
               </p>
 
               {error && (
