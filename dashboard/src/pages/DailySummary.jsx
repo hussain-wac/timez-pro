@@ -37,8 +37,10 @@ export default function DailySummary() {
   }, [userId, selectedDate]);
 
   const targetSeconds = 8 * 3600; // 8 hours in seconds
-  const progressPercent = summary
-    ? Math.min((summary.total_seconds / targetSeconds) * 100, 100)
+  // Handle both total_work_seconds (backend) and total_seconds (fallback)
+  const totalSeconds = summary?.total_work_seconds ?? summary?.total_seconds ?? 0;
+  const progressPercent = totalSeconds > 0
+    ? Math.min((totalSeconds / targetSeconds) * 100, 100)
     : 0;
 
   const formatDate = (dateStr) => {
@@ -114,8 +116,8 @@ export default function DailySummary() {
             <span className="text-blue-100 text-sm font-medium">Total Work Time</span>
             <Clock className="w-5 h-5 text-blue-200" />
           </div>
-          <p className="text-3xl font-bold">{formatHours(summary.total_seconds)}</p>
-          <p className="text-blue-100 text-sm mt-1">{formatDuration(summary.total_seconds)}</p>
+          <p className="text-3xl font-bold">{formatHours(totalSeconds)}</p>
+          <p className="text-blue-100 text-sm mt-1">{formatDuration(totalSeconds)}</p>
         </div>
 
         <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm">
@@ -162,9 +164,9 @@ export default function DailySummary() {
             />
           </div>
           <p className="text-xs text-gray-500 mt-2">
-            {summary.total_seconds >= targetSeconds
+            {totalSeconds >= targetSeconds
               ? `Great! You've reached your daily goal.`
-              : `${formatHours(targetSeconds - summary.total_seconds)} remaining to reach 8 hours`
+              : `${formatHours(targetSeconds - totalSeconds)} remaining to reach 8 hours`
             }
           </p>
         </div>
@@ -179,13 +181,14 @@ export default function DailySummary() {
         {summary.tasks && summary.tasks.length > 0 ? (
           <div className="divide-y divide-gray-100">
             {summary.tasks.map((task, index) => {
-              const taskPercent = (task.total_seconds / summary.total_seconds) * 100;
+              const taskSeconds = task.total_seconds ?? 0;
+              const taskPercent = totalSeconds > 0 ? (taskSeconds / totalSeconds) * 100 : 0;
               return (
                 <div key={index} className="p-4 hover:bg-gray-50 transition-colors">
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="font-medium text-gray-800">{task.task_name}</h3>
                     <span className="text-sm font-semibold text-blue-600">
-                      {formatHours(task.total_seconds)}
+                      {formatHours(taskSeconds)}
                     </span>
                   </div>
 
@@ -193,7 +196,7 @@ export default function DailySummary() {
                     <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-gradient-to-r from-blue-400 to-purple-500 rounded-full transition-all duration-500"
-                        style={{ width: `${taskPercent}%` }}
+                        style={{ width: `${Math.min(taskPercent, 100)}%` }}
                       />
                     </div>
                     <span className="text-xs font-medium text-gray-500 min-w-[3rem] text-right">
@@ -201,7 +204,7 @@ export default function DailySummary() {
                     </span>
                   </div>
 
-                  <p className="text-xs text-gray-500 mt-2">{formatDuration(task.total_seconds)}</p>
+                  <p className="text-xs text-gray-500 mt-2">{formatDuration(taskSeconds)}</p>
                 </div>
               );
             })}
