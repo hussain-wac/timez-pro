@@ -97,13 +97,25 @@ impl ServiceKind {
 
 #[cfg(unix)]
 fn try_connect(kind: ServiceKind) -> Result<IpcStream, String> {
-    UnixStream::connect(kind.socket_path()).map_err(|e| e.to_string())
+    let stream = UnixStream::connect(kind.socket_path()).map_err(|e| e.to_string())?;
+    // Set read/write timeouts to prevent freezing
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+    Ok(stream)
 }
 
 #[cfg(windows)]
 fn try_connect(kind: ServiceKind) -> Result<IpcStream, String> {
-    let addr = format!("127.0.0.1:{}", kind.port());
-    TcpStream::connect(&addr).map_err(|e| e.to_string())
+    use std::net::SocketAddr;
+    let addr: SocketAddr = format!("127.0.0.1:{}", kind.port())
+        .parse()
+        .map_err(|e| format!("Invalid address: {e}"))?;
+    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    // Set read/write timeouts to prevent freezing
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+    Ok(stream)
 }
 
 // ============================================================================
