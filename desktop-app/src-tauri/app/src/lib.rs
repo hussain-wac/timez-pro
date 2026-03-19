@@ -181,6 +181,22 @@ fn spawn_event_bridge<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) {
 
             let service = app_handle.state::<ServiceManager>();
 
+            // Check for midnight reset first
+            if let Ok(Some(reset_event)) = service
+                .send(Request::CheckMidnightReset)
+                .and_then(ipc::decode_midnight_reset)
+            {
+                // Emit midnight-reset event to frontend
+                let _ = app_handle.emit("midnight-reset", &reset_event);
+                // Also emit timer-stopped since the timer was stopped
+                let _ = app_handle.emit("timer-stopped", ());
+                // Update the tray icon to stopped state
+                update_app_running_icon(&app_handle, false);
+                last_running = false;
+                // Focus window to notify user
+                focus_main_window(&app_handle);
+            }
+
             if let Ok(activity) = service
                 .send(Request::GetActivityStats)
                 .and_then(ipc::decode_activity)

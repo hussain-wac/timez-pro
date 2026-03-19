@@ -7,7 +7,15 @@ from calendar import monthrange
 
 from database import get_db
 from models import Task, TimeEntry, User
-from schemas import UserResponse, TaskStatusUpdate, EmployeeWithHours, TaskCreate
+from schemas import (
+    UserResponse,
+    TaskStatusUpdate,
+    EmployeeWithHours,
+    TaskCreate,
+    UserDailySummary,
+    TaskDailySummary,
+    UserInfo,
+)
 from auth import get_current_user
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -396,3 +404,121 @@ def create_task_admin(
         "user_id": task.user_id,
         "status": task.status,
     }
+
+
+@router.get("/user-daily-summary", response_model=UserDailySummary)
+def get_user_daily_summary(
+    date: Optional[str] = None,
+    user_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get daily time tracking summary for a user.
+
+    - If no date is provided, returns today's summary
+    - If no user_id is provided, returns current user's summary
+    - Admins can query any user, non-admins can only query themselves
+
+    Query parameters:
+    - date: YYYY-MM-DD format (optional, defaults to today)
+    - user_id: User ID to query (optional, defaults to current user)
+
+    Returns:
+    - Date
+    - List of tasks worked on that day with time per task
+    - Total work time for the day
+    - User info
+    """
+    # Determine target user
+    target_user_id = user_id if user_id else current_user.id
+
+    # Check authorization: non-admins can only view their own data
+    if not current_user.is_admin and target_user_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to view other users' data"
+        )
+
+    # Get target user
+    target_user = db.query(User).filter(User.id == target_user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Parse date or use today
+    if date:
+        try:
+            query_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date format. Use YYYY-MM-DD"
+            )
+    else:
+        query_date = datetime.now(timezone.utc).date()
+
+    # Calculate date range for the query
+    day_start = datetime.combine(query_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+    day_end = datetime.combine(query_date, datetime.max.time()).replace(tzinfo=timezone.utc)
+
+    # Query time entries for the user on the specified date
+    time_entries = (
+        db.query(TimeEntry)
+        .filter(
+            TimeEntry.user_id == target_user_id,
+            TimeEntry.start_time >= day_start,
+            TimeEntry.start_time <= day_end,
+            TimeEntry.duration.isnot(None),  # Only completed entries
+        )
+        .all()
+    )
+
+    # Aggregate time by task
+    task_time_map = {}  # task_id -> {total_seconds, entries_count}
+
+    for entry in time_entries:
+        task_id = entry.task_id
+        if task_id not in task_time_map:
+            task_time_map[task_id] = {
+                "total_seconds": 0,
+                "entries_count": 0,
+            }
+        task_time_map[task_id]["total_seconds"] += entry.duration or 0
+        task_time_map[task_id]["entries_count"] += 1
+
+    # Build task summaries
+    task_summaries = []
+    for task_id, time_data in task_time_map.items():
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if task:
+            task_summaries.append(
+                TaskDailySummary(
+                    task_id=task.id,
+                    task_name=task.name,
+                    status=task.status or "todo",
+                    total_seconds=time_data["total_seconds"],
+                    time_entries_count=time_data["entries_count"],
+                )
+            )
+
+    # Sort tasks by time spent (descending)
+    task_summaries.sort(key=lambda x: x.total_seconds, reverse=True)
+
+    # Calculate totals
+    total_work_seconds = sum(t.total_seconds for t in task_summaries)
+
+    # Build user info
+    user_info = UserInfo(
+        id=target_user.id,
+        email=target_user.email,
+        name=target_user.name,
+        picture=target_user.picture,
+    )
+
+    return UserDailySummary(
+        date=query_date.isoformat(),
+        user=user_info,
+        tasks=task_summaries,
+        total_work_seconds=total_work_seconds,
+        total_tasks_worked=len(task_summaries),
+    )

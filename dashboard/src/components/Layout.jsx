@@ -1,17 +1,19 @@
 import { NavLink } from 'react-router-dom';
-import { 
-  LayoutDashboard, 
-  Users, 
-  Kanban, 
-  LogOut, 
+import {
+  LayoutDashboard,
+  Users,
+  Kanban,
+  LogOut,
   Settings,
-  Clock
+  Clock,
+  Calendar
 } from 'lucide-react';
 
 const menuItems = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/employees', label: 'Employees', icon: Users },
   { path: '/kanban', label: 'Kanban Board', icon: Kanban },
+  { path: '/daily', label: 'Daily Summary', icon: Calendar },
 ];
 
 export default function Layout({ children, user, onLogout }) {

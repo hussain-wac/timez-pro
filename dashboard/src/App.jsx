@@ -6,6 +6,8 @@ import Layout from './components/Layout';
 import DashboardHome from './pages/DashboardHome';
 import Employees from './pages/Employees';
 import Kanban from './pages/Kanban';
+import Daily from './pages/Daily';
+import DailySummary from './pages/DailySummary';
 
 function App() {
   const [user, setUser] = useState(null);
@@ -74,6 +76,8 @@ function App() {
         <Route path="/" element={<DashboardHome />} />
         <Route path="/employees" element={<Employees />} />
         <Route path="/employees/:userId" element={<Kanban />} />
+        <Route path="/daily" element={<Daily />} />
+        <Route path="/daily/:userId" element={<DailySummary />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

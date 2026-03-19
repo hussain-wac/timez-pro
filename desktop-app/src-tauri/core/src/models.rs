@@ -45,3 +45,14 @@ pub struct AuthResponse {
     pub access_token: String,
     pub user: AuthUser,
 }
+
+/// Event emitted when midnight timer reset occurs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MidnightResetEvent {
+    /// Task ID that was running and synced before reset (if any)
+    pub synced_task_id: Option<i64>,
+    /// Elapsed seconds that were synced before reset
+    pub synced_elapsed: i64,
+    /// The new date (today) after the reset
+    pub new_date: String,
+}

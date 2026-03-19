@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
-use timez_core::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, Task, TimerStatus};
+use timez_core::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Task, TimerStatus};
 use timez_core::protocol::{Request, RequestEnvelope, ResponseData, ResponseEnvelope};
 
 const REQUEST_TOKEN: &str = "timez-local";
@@ -346,7 +346,8 @@ fn route_request(request: &Request) -> ServiceKind {
         | Request::GetStatus
         | Request::AddIdleTime { .. }
         | Request::DiscardIdleTime { .. }
-        | Request::RefreshTasks => ServiceKind::Task,
+        | Request::RefreshTasks
+        | Request::CheckMidnightReset => ServiceKind::Task,
         Request::GetActivityStats => ServiceKind::Tracker,
         Request::GetIdleEvent | Request::ResolveIdleEvent => ServiceKind::IdleTime,
         Request::Shutdown => ServiceKind::Quit,
@@ -402,6 +403,13 @@ pub fn decode_idle_event(data: ResponseData) -> Result<Option<IdleEvent>, String
 pub fn decode_unit(data: ResponseData) -> Result<(), String> {
     match data {
         ResponseData::Unit => Ok(()),
+        _ => Err("Unexpected service response".to_string()),
+    }
+}
+
+pub fn decode_midnight_reset(data: ResponseData) -> Result<Option<MidnightResetEvent>, String> {
+    match data {
+        ResponseData::MidnightReset(event) => Ok(event),
         _ => Err("Unexpected service response".to_string()),
     }
 }

@@ -1,8 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use chrono::Timelike;
 use timez_core::format_duration;
-use timez_core::models::{Task, TimerStatus};
+use timez_core::models::{MidnightResetEvent, Task, TimerStatus};
 use timez_core::protocol::{Request, ResponseData};
 use timez_core::timer_state::TimerStateInner;
 
@@ -57,6 +56,9 @@ fn handle_request(
             task_id,
         )?)),
         Request::RefreshTasks => Ok(ResponseData::Tasks(refresh_tasks(timer_state)?)),
+        Request::CheckMidnightReset => Ok(ResponseData::MidnightReset(check_midnight_reset(
+            timer_state,
+        )?)),
         Request::Shutdown => Ok(ResponseData::Unit),
         _ => Err("Unsupported request for task service".to_string()),
     }
@@ -124,6 +126,22 @@ fn refresh_tasks(timer_state: &Arc<Mutex<TimerStateInner>>) -> Result<Vec<Task>,
     Ok(timer.get_tasks())
 }
 
+fn check_midnight_reset(
+    timer_state: &Arc<Mutex<TimerStateInner>>,
+) -> Result<Option<MidnightResetEvent>, String> {
+    let token = auth_store::read_token();
+    let mut timer = timer_state.lock().map_err(|err| err.to_string())?;
+
+    match timer.check_midnight_reset(&token) {
+        Some(info) => Ok(Some(MidnightResetEvent {
+            synced_task_id: info.synced_task_id,
+            synced_elapsed: info.synced_elapsed,
+            new_date: timer.current_day().to_string(),
+        })),
+        None => Ok(None),
+    }
+}
+
 fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
     use timez_core::api;
 
@@ -142,32 +160,22 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(SYNC_INTERVAL_SECS));
 
-            let now = chrono::Utc::now();
+            let token = auth_store::read_token();
 
-            // Check for midnight reset
-            if now.hour() == 0 && now.minute() == 0 {
-                println!("[sync] Midnight reset - stopping timer");
-                if let Ok(mut timer) = timer_state.lock() {
-                    if let Some(task_id) = timer.running_task_id {
-                        let total_elapsed = timer.get_total_elapsed(task_id);
-                        if total_elapsed > 0 {
-                            if let Some(started_at) = timer.timer_started_at {
-                                let client_started = started_at.to_rfc3339();
-                                let _ = api::sync_time(
-                                    task_id,
-                                    total_elapsed,
-                                    &client_started,
-                                    Some(&now.to_rfc3339()),
-                                    &auth_store::read_token(),
-                                );
-                            }
-                        }
-                        let _ = timer.stop_current(&auth_store::read_token());
-                    }
+            // Check for midnight reset first (before syncing)
+            if let Ok(mut timer) = timer_state.lock() {
+                if let Some(info) = timer.check_midnight_reset(&token) {
+                    println!(
+                        "[sync] Midnight reset occurred: synced_task={:?}, synced_elapsed={}",
+                        info.synced_task_id, info.synced_elapsed
+                    );
+                    // After midnight reset, sync from API to get fresh task list
+                    timer.sync_from_api(&token);
+                    println!("[sync] Post-midnight sync complete");
+                    continue;
                 }
             }
 
-            let token = auth_store::read_token();
             println!("[sync] Syncing with API...");
 
             if let Ok(mut timer) = timer_state.lock() {

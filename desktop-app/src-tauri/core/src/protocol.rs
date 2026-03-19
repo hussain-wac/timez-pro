@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, Task, TimerStatus};
+use crate::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Task, TimerStatus};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RequestEnvelope {
@@ -24,6 +24,8 @@ pub enum Request {
     Logout,
     GetIdleEvent,
     ResolveIdleEvent,
+    /// Check if midnight has passed and get reset event if it occurred
+    CheckMidnightReset,
     Shutdown,
 }
 
@@ -42,5 +44,7 @@ pub enum ResponseData {
     AuthResponse(AuthResponse),
     AuthUser(AuthUser),
     IdleEvent(Option<IdleEvent>),
+    /// Midnight reset event (None if no reset occurred)
+    MidnightReset(Option<MidnightResetEvent>),
     Unit,
 }

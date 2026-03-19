@@ -116,3 +116,36 @@ class EmployeeWithHours(BaseModel):
     picture: Optional[str]
     monthly_hours: int = 0
     task_count: int = 0
+
+
+# Daily Summary schemas
+class TaskDailySummary(BaseModel):
+    task_id: int
+    task_name: str
+    status: str
+    total_seconds: int
+    time_entries_count: int
+
+    class Config:
+        from_attributes = True
+
+
+class UserInfo(BaseModel):
+    id: int
+    email: str
+    name: Optional[str]
+    picture: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class UserDailySummary(BaseModel):
+    date: str  # YYYY-MM-DD format
+    user: UserInfo
+    tasks: list[TaskDailySummary]
+    total_work_seconds: int
+    total_tasks_worked: int
+
+    class Config:
+        from_attributes = True

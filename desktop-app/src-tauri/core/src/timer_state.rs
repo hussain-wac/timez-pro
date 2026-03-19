@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{Local, NaiveDate, Utc};
 
 use crate::api;
 use crate::api::AuthTokenState;
@@ -15,6 +15,15 @@ pub struct StopInfo {
     pub task_id: i64,
     pub started_at: chrono::DateTime<Utc>,
     pub elapsed_secs: i64,
+}
+
+/// Information returned when a midnight reset occurs.
+#[derive(Debug)]
+pub struct MidnightResetInfo {
+    /// Task ID that was synced before reset (if any)
+    pub synced_task_id: Option<i64>,
+    /// Elapsed seconds that were synced
+    pub synced_elapsed: i64,
 }
 
 /// Local timer state that tracks everything without hitting the external API.
@@ -37,6 +46,8 @@ pub struct TimerStateInner {
     pub base_elapsed: HashMap<i64, i64>,
     /// Total elapsed sent to backend in last sync (to avoid double-counting)
     pub last_synced_elapsed: HashMap<i64, i64>,
+    /// The local date for which we are tracking time (resets at midnight)
+    current_day: NaiveDate,
 }
 
 pub type TimerState = Mutex<TimerStateInner>;
@@ -59,6 +70,7 @@ impl TimerStateInner {
             last_sync_at: chrono::DateTime::<Utc>::MIN_UTC,
             base_elapsed: HashMap::new(),
             last_synced_elapsed: HashMap::new(),
+            current_day: Local::now().date_naive(),
         }
     }
 
@@ -254,6 +266,90 @@ impl TimerStateInner {
             }
         }
         Ok(())
+    }
+
+    /// Check if midnight has passed and reset timers if so.
+    ///
+    /// This method compares the current local date with the stored `current_day`.
+    /// If the day has changed (midnight crossed), it will:
+    /// 1. Stop any running timer and sync to backend
+    /// 2. Clear all `base_elapsed` values (daily totals)
+    /// 3. Update `current_day` to today
+    ///
+    /// Returns `Some(MidnightResetInfo)` if a reset occurred, `None` otherwise.
+    pub fn check_midnight_reset(&mut self, token: &Option<String>) -> Option<MidnightResetInfo> {
+        let today = Local::now().date_naive();
+
+        if today == self.current_day {
+            return None;
+        }
+
+        println!(
+            "[midnight] Day changed from {} to {} - performing reset",
+            self.current_day, today
+        );
+
+        let mut reset_info = MidnightResetInfo {
+            synced_task_id: None,
+            synced_elapsed: 0,
+        };
+
+        // If a timer is running, sync the accumulated time before reset
+        if let Some(task_id) = self.running_task_id {
+            let total_elapsed = self.get_total_elapsed(task_id);
+
+            if total_elapsed > 0 {
+                if let Some(started_at) = self.timer_started_at {
+                    let client_started = started_at.to_rfc3339();
+                    let client_stopped = Utc::now().to_rfc3339();
+
+                    println!(
+                        "[midnight] Syncing {} seconds for task {} before reset",
+                        total_elapsed, task_id
+                    );
+
+                    match api::sync_time(
+                        task_id,
+                        total_elapsed,
+                        &client_started,
+                        Some(&client_stopped),
+                        token,
+                    ) {
+                        Ok(_) => {
+                            println!("[midnight] Sync successful");
+                            reset_info.synced_task_id = Some(task_id);
+                            reset_info.synced_elapsed = total_elapsed;
+                        }
+                        Err(e) => {
+                            eprintln!("[midnight] Sync failed: {e}");
+                        }
+                    }
+                }
+            }
+
+            // Stop the timer
+            self.running_task_id = None;
+            self.timer_started_at = None;
+            self.last_task_id = Some(task_id);
+        }
+
+        // Clear all elapsed times - new day starts fresh
+        self.base_elapsed.clear();
+        self.last_synced_elapsed.clear();
+
+        // Update to today
+        self.current_day = today;
+
+        println!("[midnight] Reset complete - all elapsed times cleared");
+
+        Some(reset_info)
+    }
+
+    /// Returns the current tracking day.
+    #[must_use]
+    #[inline]
+    pub fn current_day(&self) -> NaiveDate {
+        self.current_day
     }
 }
 

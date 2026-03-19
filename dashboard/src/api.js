@@ -61,10 +61,16 @@ export const dashboardApi = {
   getKanban: (userId) => api.get(`/api/dashboard/kanban/${userId}`),
   updateTaskStatus: (taskId, status) => api.post(`/api/dashboard/tasks/${taskId}/status`, { status }),
   assignTask: (taskId, userId) => api.post('/api/dashboard/tasks/assign', { task_id: taskId, user_id: userId }),
-  createTask: (name, maxHours, userId, status) => api.post('/api/dashboard/tasks', { 
-    name, 
-    max_hours: maxHours, 
+  createTask: (name, maxHours, userId, status) => api.post('/api/dashboard/tasks', {
+    name,
+    max_hours: maxHours,
     user_id: userId,
-    status 
+    status
   }),
+  getUserDailySummary: (userId, date) => {
+    const params = new URLSearchParams();
+    if (userId) params.append('user_id', userId);
+    if (date) params.append('date', date);
+    return api.get(`/api/dashboard/user-daily-summary?${params.toString()}`);
+  },
 };
