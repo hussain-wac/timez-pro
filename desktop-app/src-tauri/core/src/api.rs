@@ -209,7 +209,7 @@ pub fn list_projects(token: &Option<String>) -> Result<Vec<Project>, String> {
     Ok(projects)
 }
 
-/// Fetches tasks for a specific project (only in_progress tasks for timer).
+/// Fetches tasks for a specific project assigned to the current user (only in_progress tasks).
 ///
 /// Returns an empty list if no token is provided (not logged in).
 pub fn list_project_tasks(project_id: i64, token: &Option<String>) -> Result<Vec<Task>, String> {
@@ -219,9 +219,9 @@ pub fn list_project_tasks(project_id: i64, token: &Option<String>) -> Result<Vec
     };
 
     let header = format!("Bearer {}", token);
-    // Only fetch in_progress tasks for the timer (exclude done/todo/review)
+    // Fetch only tasks assigned to the current user in this project with in_progress status
     let resp = ureq::get(&format!(
-        "{}/api/projects/{}/tasks?status=in_progress",
+        "{}/api/me/tasks?project_id={}&status=in_progress",
         BASE_URL, project_id
     ))
     .set("Authorization", &header)
