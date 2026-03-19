@@ -313,13 +313,18 @@ fn resolve_service_binary<R: tauri::Runtime>(
     kind: ServiceKind,
 ) -> Result<PathBuf, String> {
     let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    eprintln!("[ipc] Current exe: {:?}", current_exe);
+
     if let Some(parent) = current_exe.parent() {
         #[cfg(unix)]
         let candidate = parent.join(kind.binary_name());
         #[cfg(windows)]
         let candidate = parent.join(kind.binary_name_exe());
 
+        eprintln!("[ipc] Checking candidate: {:?} (exists: {})", candidate, candidate.exists());
+
         if candidate.exists() {
+            eprintln!("[ipc] Found service binary at: {:?}", candidate);
             return Ok(candidate);
         }
 
@@ -327,7 +332,9 @@ fn resolve_service_binary<R: tauri::Runtime>(
         {
             // Support legacy bundles where service binaries were copied without ".exe".
             let legacy_candidate = parent.join(kind.binary_name());
+            eprintln!("[ipc] Checking legacy candidate: {:?} (exists: {})", legacy_candidate, legacy_candidate.exists());
             if legacy_candidate.exists() {
+                eprintln!("[ipc] Found service binary at legacy path: {:?}", legacy_candidate);
                 return Ok(legacy_candidate);
             }
         }
@@ -338,12 +345,17 @@ fn resolve_service_binary<R: tauri::Runtime>(
         .resource_dir()
         .map_err(|e| e.to_string())?;
 
+    eprintln!("[ipc] Resource dir: {:?}", resource_dir);
+
     #[cfg(unix)]
     let bundled = resource_dir.join(kind.binary_name());
     #[cfg(windows)]
     let bundled = resource_dir.join(kind.binary_name_exe());
 
+    eprintln!("[ipc] Checking bundled: {:?} (exists: {})", bundled, bundled.exists());
+
     if bundled.exists() {
+        eprintln!("[ipc] Found service binary in resources: {:?}", bundled);
         return Ok(bundled);
     }
 
@@ -351,7 +363,9 @@ fn resolve_service_binary<R: tauri::Runtime>(
     {
         // Support legacy bundles where service resources were named without ".exe".
         let legacy_bundled = resource_dir.join(kind.binary_name());
+        eprintln!("[ipc] Checking legacy bundled: {:?} (exists: {})", legacy_bundled, legacy_bundled.exists());
         if legacy_bundled.exists() {
+            eprintln!("[ipc] Found service binary at legacy resource path: {:?}", legacy_bundled);
             return Ok(legacy_bundled);
         }
     }
