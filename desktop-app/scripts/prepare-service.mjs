@@ -1,7 +1,10 @@
 import { copyFileSync, chmodSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-const rootDir = resolve(dirname(new URL(import.meta.url).pathname), "..");
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const rootDir = resolve(__dirname, "..");
 const srcTauriDir = join(rootDir, "src-tauri");
 const resourcesDir = join(srcTauriDir, "resources");
 const profile = process.argv.includes("--release") ? "release" : "debug";
