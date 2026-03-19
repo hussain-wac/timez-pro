@@ -36,7 +36,11 @@ pub struct TimerStateInner {
     pub cached_tasks: Vec<Task>,
     /// Currently running task id
     pub running_task_id: Option<i64>,
-    /// When the current timer was started (local clock)
+    /// When the current timer SESSION was started (for backend session tracking)
+    pub session_started_at: Option<chrono::DateTime<Utc>>,
+    /// When the last sync slot ended (for calculating incremental slot_seconds)
+    pub last_slot_sync_at: Option<chrono::DateTime<Utc>>,
+    /// When the current timer was started (local clock for UI display)
     pub timer_started_at: Option<chrono::DateTime<Utc>>,
     /// Last task id we ran (used for resume)
     pub last_task_id: Option<i64>,
@@ -65,6 +69,8 @@ impl TimerStateInner {
         Self {
             cached_tasks: Vec::new(),
             running_task_id: None,
+            session_started_at: None,
+            last_slot_sync_at: None,
             timer_started_at: None,
             last_task_id: None,
             last_sync_at: chrono::DateTime::<Utc>::MIN_UTC,
@@ -237,8 +243,11 @@ impl TimerStateInner {
         }
 
         // Track locally - sync happens periodically or on stop
+        let now = Utc::now();
         self.running_task_id = Some(task_id);
-        self.timer_started_at = Some(Utc::now());
+        self.session_started_at = Some(now);
+        self.last_slot_sync_at = Some(now);
+        self.timer_started_at = Some(now);
         self.last_task_id = Some(task_id);
         Ok(())
     }
@@ -255,8 +264,11 @@ impl TimerStateInner {
         *base += idle_secs;
 
         // Resume tracking locally
+        let now = Utc::now();
         self.running_task_id = Some(task_id);
-        self.timer_started_at = Some(Utc::now());
+        self.session_started_at = Some(now);
+        self.last_slot_sync_at = Some(now);
+        self.timer_started_at = Some(now);
         self.last_task_id = Some(task_id);
         Ok(())
     }
@@ -305,23 +317,39 @@ impl TimerStateInner {
     ///
     /// Returns an error if synchronization fails, though timing data is preserved locally.
     pub fn stop_current(&mut self, token: &Option<String>) -> Result<(), String> {
+        // Capture session info before stopping
+        let session_start = self.session_started_at;
+        let last_slot_sync = self.last_slot_sync_at;
+
         if let Some(info) = self.stop_current_local() {
+            // Calculate slot_seconds since last sync (not total elapsed)
+            let slot_seconds = if let Some(last_sync) = last_slot_sync {
+                let now = Utc::now();
+                let slot_secs = (now - last_sync).num_seconds();
+                if slot_secs < 0 { 0 } else { slot_secs }
+            } else {
+                info.elapsed_secs
+            };
+
             // Sync to backend if there's meaningful elapsed time
-            if info.elapsed_secs > 0 {
-                let client_started = info.started_at.to_rfc3339();
-                let client_stopped = chrono::Utc::now().to_rfc3339();
+            if slot_seconds > 0 {
+                let session_start_str = session_start
+                    .unwrap_or(info.started_at)
+                    .to_rfc3339();
+                let slot_end_str = Utc::now().to_rfc3339();
 
                 match api::sync_time(
                     info.task_id,
-                    info.elapsed_secs,
-                    &client_started,
-                    Some(&client_stopped),
+                    slot_seconds,
+                    &session_start_str,
+                    &slot_end_str,
+                    true, // is_final = true for stop
                     token,
                 ) {
                     Ok(_response) => {
                         println!(
-                            "[timer] Stop synced {} seconds for task {}",
-                            info.elapsed_secs, info.task_id
+                            "[timer] Stop synced {} slot seconds for task {}",
+                            slot_seconds, info.task_id
                         );
                     }
                     Err(e) => {
@@ -330,6 +358,11 @@ impl TimerStateInner {
                 }
             }
         }
+
+        // Clear session tracking
+        self.session_started_at = None;
+        self.last_slot_sync_at = None;
+
         Ok(())
     }
 
@@ -361,40 +394,52 @@ impl TimerStateInner {
 
         // If a timer is running, sync the accumulated time before reset
         if let Some(task_id) = self.running_task_id {
-            let total_elapsed = self.get_total_elapsed(task_id);
+            let now = Utc::now();
 
-            if total_elapsed > 0 {
-                if let Some(started_at) = self.timer_started_at {
-                    let client_started = started_at.to_rfc3339();
-                    let client_stopped = Utc::now().to_rfc3339();
+            // Calculate slot_seconds since last sync
+            let slot_seconds = self.last_slot_sync_at
+                .map(|last_sync| {
+                    let secs = (now - last_sync).num_seconds();
+                    if secs < 0 { 0 } else { secs }
+                })
+                .unwrap_or_else(|| self.get_total_elapsed(task_id));
 
-                    println!(
-                        "[midnight] Syncing {} seconds for task {} before reset",
-                        total_elapsed, task_id
-                    );
+            if slot_seconds > 0 {
+                let session_start_str = self.session_started_at
+                    .or(self.timer_started_at)
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| now.to_rfc3339());
+                let slot_end_str = now.to_rfc3339();
 
-                    match api::sync_time(
-                        task_id,
-                        total_elapsed,
-                        &client_started,
-                        Some(&client_stopped),
-                        token,
-                    ) {
-                        Ok(_) => {
-                            println!("[midnight] Sync successful");
-                            reset_info.synced_task_id = Some(task_id);
-                            reset_info.synced_elapsed = total_elapsed;
-                        }
-                        Err(e) => {
-                            eprintln!("[midnight] Sync failed: {e}");
-                        }
+                println!(
+                    "[midnight] Syncing {} slot seconds for task {} before reset",
+                    slot_seconds, task_id
+                );
+
+                match api::sync_time(
+                    task_id,
+                    slot_seconds,
+                    &session_start_str,
+                    &slot_end_str,
+                    true, // is_final = true
+                    token,
+                ) {
+                    Ok(_) => {
+                        println!("[midnight] Sync successful");
+                        reset_info.synced_task_id = Some(task_id);
+                        reset_info.synced_elapsed = slot_seconds;
+                    }
+                    Err(e) => {
+                        eprintln!("[midnight] Sync failed: {e}");
                     }
                 }
             }
 
-            // Stop the timer
+            // Stop the timer and clear session tracking
             self.running_task_id = None;
             self.timer_started_at = None;
+            self.session_started_at = None;
+            self.last_slot_sync_at = None;
             self.last_task_id = Some(task_id);
         }
 
@@ -415,6 +460,51 @@ impl TimerStateInner {
     #[inline]
     pub fn current_day(&self) -> NaiveDate {
         self.current_day
+    }
+
+    /// Sync the current time slot to backend (called periodically).
+    /// Returns the number of slot seconds synced, or None if no timer is running.
+    pub fn sync_slot(&mut self, token: &Option<String>) -> Option<i64> {
+        let task_id = self.running_task_id?;
+        let session_start = self.session_started_at?;
+        let last_slot_sync = self.last_slot_sync_at?;
+
+        let now = Utc::now();
+        let slot_seconds = (now - last_slot_sync).num_seconds();
+
+        // Skip if no meaningful time to sync
+        if slot_seconds <= 0 {
+            return Some(0);
+        }
+
+        let session_start_str = session_start.to_rfc3339();
+        let slot_end_str = now.to_rfc3339();
+
+        match api::sync_time(
+            task_id,
+            slot_seconds,
+            &session_start_str,
+            &slot_end_str,
+            false, // is_final = false for periodic sync
+            token,
+        ) {
+            Ok(_response) => {
+                println!(
+                    "[sync] Synced {} slot seconds for task {}",
+                    slot_seconds, task_id
+                );
+                // Update last_slot_sync_at to now
+                self.last_slot_sync_at = Some(now);
+                // Update the synced elapsed tracking
+                let total = self.get_total_elapsed(task_id);
+                self.last_synced_elapsed.insert(task_id, total);
+                Some(slot_seconds)
+            }
+            Err(e) => {
+                eprintln!("[sync] Failed to sync slot: {e}");
+                None
+            }
+        }
     }
 }
 
@@ -441,9 +531,17 @@ pub fn spawn_sync_thread(
 
             let token = get_token(&auth_state);
             if let Ok(mut s) = timer_state.lock() {
-                println!("[sync] Syncing with API...");
+                // First, sync the current time slot to backend if timer is running
+                if s.is_running() {
+                    if let Some(slot_secs) = s.sync_slot(&token) {
+                        println!("[sync] Slot sync complete: {} seconds", slot_secs);
+                    }
+                }
+
+                // Then sync task list from API
+                println!("[sync] Syncing task list from API...");
                 s.sync_from_api(&token);
-                println!("[sync] Sync complete");
+                println!("[sync] Task sync complete");
             }
         }
     });

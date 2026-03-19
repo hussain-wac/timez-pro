@@ -190,9 +190,10 @@ class TimeEntryResponse(BaseModel):
 
 class SyncTimeRequest(BaseModel):
     task_id: int
-    elapsed_seconds: int
-    client_started_at: datetime
-    client_stopped_at: Optional[datetime] = None
+    slot_seconds: int  # Duration of THIS sync slot (seconds tracked since last sync)
+    session_start: datetime  # When the timer session started
+    slot_end: datetime  # When this sync slot ends (current time or stop time)
+    is_final: bool = False  # True if timer was stopped
 
 
 class StopTimerRequest(BaseModel):

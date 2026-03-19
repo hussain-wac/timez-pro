@@ -317,8 +317,42 @@ def sync_time(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Upsert time entry with cumulative time. Stores client timestamps for crash recovery."""
-    logger.info(f"[sync-time] task_id={request.task_id}, elapsed={request.elapsed_seconds}, user={current_user.id}")
+    """
+    Sync time slot from desktop app.
+
+    The desktop app sends incremental time slots (seconds tracked since last sync).
+    Backend ADDS the slot_seconds to the running entry's duration.
+    Time can only increment - never decrement.
+
+    Request:
+    - task_id: Task being tracked
+    - slot_seconds: Seconds tracked in THIS slot (since last sync)
+    - session_start: When the timer session started
+    - slot_end: Current time or stop time
+    - is_final: True if timer was stopped
+    """
+    logger.info(f"[sync-time] task_id={request.task_id}, slot_seconds={request.slot_seconds}, is_final={request.is_final}, user={current_user.id}")
+
+    # Validate slot_seconds is positive
+    if request.slot_seconds < 0:
+        logger.warning(f"[sync-time] Rejected negative slot_seconds: {request.slot_seconds}")
+        raise HTTPException(status_code=400, detail="slot_seconds cannot be negative")
+
+    # Skip if slot is 0 seconds (no time to add)
+    if request.slot_seconds == 0 and not request.is_final:
+        logger.info(f"[sync-time] Skipping 0-second slot for task {request.task_id}")
+        # Return existing entry or create placeholder
+        running = (
+            db.query(TimeEntry)
+            .filter(
+                TimeEntry.task_id == request.task_id,
+                TimeEntry.user_id == current_user.id,
+                TimeEntry.end_time.is_(None),
+            )
+            .first()
+        )
+        if running:
+            return running
 
     task = db.query(Task).filter(Task.id == request.task_id).first()
     if not task:
@@ -347,6 +381,7 @@ def sync_time(
         db.add(assignment)
         db.commit()
 
+    # Find running (open) entry for this task and user
     running = (
         db.query(TimeEntry)
         .filter(
@@ -358,27 +393,35 @@ def sync_time(
     )
 
     if running:
-        logger.info(f"[sync-time] Updating existing entry {running.id}, old_duration={running.duration}, new_duration={request.elapsed_seconds}")
-        running.client_started_at = request.client_started_at
-        running.client_stopped_at = request.client_stopped_at
-        running.duration = request.elapsed_seconds
-        if request.client_stopped_at:
-            running.end_time = request.client_stopped_at
+        # ADD the slot_seconds to existing duration (never subtract)
+        old_duration = running.duration or 0
+        new_duration = old_duration + request.slot_seconds
+
+        logger.info(f"[sync-time] Adding to entry {running.id}: {old_duration} + {request.slot_seconds} = {new_duration}")
+
+        running.duration = new_duration
+        running.client_stopped_at = request.slot_end
+
+        if request.is_final:
+            running.end_time = request.slot_end
             running.is_synced = True
+            logger.info(f"[sync-time] Session ended. Entry {running.id} finalized with duration={new_duration}")
+
         db.commit()
         db.refresh(running)
     else:
-        logger.info(f"[sync-time] Creating new entry for task {request.task_id}, duration={request.elapsed_seconds}")
+        # Create new entry for this session
+        logger.info(f"[sync-time] Creating new entry for task {request.task_id}, initial duration={request.slot_seconds}")
         entry = TimeEntry(
             task_id=request.task_id,
             user_id=current_user.id,
-            project_id=task.project_id,  # Denormalized project_id
-            start_time=request.client_started_at,
-            end_time=request.client_stopped_at,
-            duration=request.elapsed_seconds,
-            client_started_at=request.client_started_at,
-            client_stopped_at=request.client_stopped_at,
-            is_synced=request.client_stopped_at is not None,
+            project_id=task.project_id,
+            start_time=request.session_start,
+            end_time=request.slot_end if request.is_final else None,
+            duration=request.slot_seconds,
+            client_started_at=request.session_start,
+            client_stopped_at=request.slot_end,
+            is_synced=request.is_final,
         )
         db.add(entry)
         db.commit()
@@ -391,14 +434,12 @@ def sync_time(
         .filter(TimeEntry.task_id == request.task_id, TimeEntry.duration.isnot(None))
         .scalar()
     ) or 0
-    logger.info(f"[sync-time] Task {request.task_id} now has total duration: {total} seconds")
+    logger.info(f"[sync-time] Task {request.task_id} total duration: {total} seconds")
 
-    # Update user's current task (but don't change task status automatically)
-    if request.client_stopped_at:
-        # Timer stopped - clear current task but keep task status as in_progress
+    # Update user's current task
+    if request.is_final:
         current_user.current_task_id = None
     else:
-        # Timer running - set as current task and ensure status is in_progress
         if task.status == "todo":
             task.status = "in_progress"
         current_user.current_task_id = request.task_id

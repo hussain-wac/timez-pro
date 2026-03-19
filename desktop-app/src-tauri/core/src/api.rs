@@ -275,11 +275,21 @@ pub struct SyncTimeResponse {
     pub is_synced: bool,
 }
 
+/// Sync a time slot to the backend.
+///
+/// This sends INCREMENTAL time (seconds tracked since last sync), not cumulative.
+/// Backend will ADD this to the running total.
+///
+/// - slot_seconds: Seconds tracked in THIS slot (since last sync)
+/// - session_start: When the timer session started (ISO 8601)
+/// - slot_end: Current time or stop time (ISO 8601)
+/// - is_final: True if timer was stopped
 pub fn sync_time(
     task_id: i64,
-    elapsed_seconds: i64,
-    client_started_at: &str,
-    client_stopped_at: Option<&str>,
+    slot_seconds: i64,
+    session_start: &str,
+    slot_end: &str,
+    is_final: bool,
     token: &Option<String>,
 ) -> Result<SyncTimeResponse, String> {
     let mut req = ureq::post(&format!("{}/api/tasks/sync-time", BASE_URL));
@@ -289,10 +299,17 @@ pub fn sync_time(
     req = req.set("Content-Type", "application/json");
     let body = serde_json::json!({
         "task_id": task_id,
-        "elapsed_seconds": elapsed_seconds,
-        "client_started_at": client_started_at,
-        "client_stopped_at": client_stopped_at
+        "slot_seconds": slot_seconds,
+        "session_start": session_start,
+        "slot_end": slot_end,
+        "is_final": is_final
     });
+
+    eprintln!(
+        "[api] Syncing time slot: task_id={}, slot_seconds={}, is_final={}",
+        task_id, slot_seconds, is_final
+    );
+
     let resp = req
         .send_json(body)
         .map_err(|e| format!("API error: {}", e))?;
@@ -311,7 +328,7 @@ pub fn sync_time(
     }
 
     eprintln!(
-        "[api] Sync handshake confirmed: task_id={}, duration={:?}, is_synced={}",
+        "[api] Sync confirmed: task_id={}, total_duration={:?}, is_synced={}",
         sync_response.task_id, sync_response.duration, sync_response.is_synced
     );
 
