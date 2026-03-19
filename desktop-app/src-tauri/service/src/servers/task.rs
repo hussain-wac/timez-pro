@@ -309,69 +309,35 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>, sync_queue: Arc<S
             println!("[sync] Syncing with API...");
 
             if let Ok(mut timer) = timer_state.lock() {
-                if let (Some(task_id), Some(started_at)) =
-                    (timer.running_task_id, timer.timer_started_at)
-                {
-                    let total_elapsed = timer.get_total_elapsed(task_id);
-                    let client_started = started_at.to_rfc3339();
-
-                    let last_synced = timer
-                        .last_synced_elapsed
-                        .get(&task_id)
-                        .copied()
-                        .unwrap_or(0);
-                    let new_time = total_elapsed - last_synced;
-
-                    println!(
-                        "[sync] Task {}: total={}, last_synced={}, new={}",
-                        task_id, total_elapsed, last_synced, new_time
-                    );
-
-                    if total_elapsed > 0 && new_time > 0 {
-                        println!("[sync] Syncing {} to server...", format_duration(new_time));
-
-                        match api::sync_time(task_id, total_elapsed, &client_started, None, &token)
-                        {
-                            Ok(response) => {
-                                println!(
-                                    "[sync] Handshake confirmed: task_id={}, backend_duration={:?}",
-                                    response.task_id, response.duration
-                                );
-                                println!(
-                                    "[sync] Synced {} total ({} new) for task {}",
-                                    total_elapsed, new_time, task_id
-                                );
-                                timer.mark_synced(task_id, total_elapsed);
-
-                                // Also remove from queue if it was there
+                // Use the new slot-based sync method
+                if timer.is_running() {
+                    match timer.sync_slot(&token) {
+                        Some(slot_secs) => {
+                            println!("[sync] Slot sync complete: {} seconds", slot_secs);
+                            // Also remove from queue if it was there
+                            if let Some(task_id) = timer.running_task_id {
                                 sync_queue.mark_synced(task_id);
-
-                                println!(
-                                    "[sync] {} synced successfully",
-                                    format_duration(new_time)
-                                );
                             }
-                            Err(e) => {
-                                // Sync failed - add to persistent queue for retry
-                                println!("[sync] Error syncing task {}: {}", task_id, e);
-                                println!(
-                                    "[sync] Adding to retry queue: task_id={}, elapsed={}",
-                                    task_id, total_elapsed
-                                );
+                        }
+                        None => {
+                            // Sync failed - add to persistent queue for retry
+                            if let (Some(task_id), Some(started_at)) =
+                                (timer.running_task_id, timer.timer_started_at)
+                            {
+                                let total_elapsed = timer.get_total_elapsed(task_id);
+                                let client_started = started_at.to_rfc3339();
 
+                                println!("[sync] Slot sync failed, adding to retry queue");
                                 sync_queue.enqueue(
                                     task_id,
                                     total_elapsed,
-                                    client_started.clone(),
+                                    client_started,
                                     None, // Timer still running
                                 );
 
-                                // Record the failure for exponential backoff
-                                sync_queue.record_failure(task_id, e.clone());
-
                                 eprintln!(
-                                    "[sync] SYNC_ERROR: task_id={}, elapsed={}, error={}",
-                                    task_id, total_elapsed, e
+                                    "[sync] SYNC_ERROR: task_id={}, elapsed={}",
+                                    task_id, total_elapsed
                                 );
                             }
                         }
@@ -417,11 +383,17 @@ fn process_retry_queue(sync_queue: &SyncQueue, token: &Option<String>) {
             entry.retry_count + 1
         );
 
+        // For retry queue, we send the stored elapsed as slot_seconds
+        let slot_end = entry.client_stopped_at.clone()
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let is_final = entry.client_stopped_at.is_some();
+
         match api::sync_time(
             entry.task_id,
             entry.elapsed_seconds,
             &entry.client_started_at,
-            entry.client_stopped_at.as_deref(),
+            &slot_end,
+            is_final,
             token,
         ) {
             Ok(response) => {
