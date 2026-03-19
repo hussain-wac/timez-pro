@@ -253,9 +253,17 @@ mod windows {
     extern "system" {
         fn GetLastInputInfo(plii: *mut LASTINPUTINFO) -> i32;
         fn GetTickCount() -> u32;
-        fn GetForegroundWindow() -> isize;
+        fn OpenInputDesktop(
+            dw_flags: u32,
+            f_inherit: i32,
+            dw_desired_access: u32,
+        ) -> *mut std::ffi::c_void;
+        fn CloseDesktop(h_desktop: *mut std::ffi::c_void) -> i32;
     }
 
+    /// Detects how long the user has been idle on Windows.
+    ///
+    /// Uses `GetLastInputInfo` which tracks keyboard and mouse activity.
     pub fn get_idle_secs() -> u64 {
         unsafe {
             let mut lii = LASTINPUTINFO {
@@ -265,14 +273,30 @@ mod windows {
 
             if GetLastInputInfo(&mut lii) != 0 {
                 let idle_ms = GetTickCount().wrapping_sub(lii.dw_time);
-                (idle_ms / 1000) as u64
+                u64::from(idle_ms / 1000)
             } else {
                 0
             }
         }
     }
 
+    /// Detects if the Windows workstation is locked.
+    ///
+    /// Uses `OpenInputDesktop` - if it fails, the desktop is likely locked
+    /// or switched to a secure desktop (like the lock screen).
     pub fn is_workstation_locked() -> bool {
-        unsafe { GetForegroundWindow() == 0 }
+        // DESKTOP_SWITCHDESKTOP = 0x0100
+        const DESKTOP_SWITCHDESKTOP: u32 = 0x0100;
+
+        unsafe {
+            let desktop = OpenInputDesktop(0, 0, DESKTOP_SWITCHDESKTOP);
+            if desktop.is_null() {
+                // Cannot access the input desktop - workstation is likely locked
+                true
+            } else {
+                CloseDesktop(desktop);
+                false
+            }
+        }
     }
 }

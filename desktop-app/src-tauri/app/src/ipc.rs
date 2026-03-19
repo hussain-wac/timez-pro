@@ -249,7 +249,7 @@ fn spawn_service_process<R: tauri::Runtime>(
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .current_dir(manifest_dir)
+            .current_dir(&manifest_dir)
             .spawn()
             .map_err(|e| {
                 format!(
@@ -259,21 +259,31 @@ fn spawn_service_process<R: tauri::Runtime>(
             });
     }
 
-    if let Ok(service_bin) = resolve_service_binary(app_handle, kind) {
-        return Command::new(&service_bin)
-            .arg("--parent-pid")
-            .arg(&parent_pid)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| format!("Failed to start {}: {e}", kind.binary_name()));
+    let service_bin = resolve_service_binary(app_handle, kind)?;
+    eprintln!(
+        "[ipc] Starting service {} from {:?}",
+        kind.binary_name(),
+        service_bin
+    );
+
+    let mut cmd = Command::new(&service_bin);
+    cmd.arg("--parent-pid")
+        .arg(&parent_pid)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+
+    // On Windows, ensure the service runs without creating a visible console window
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW = 0x08000000
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    Err(format!(
-        "Unable to locate {} executable",
-        kind.binary_name()
-    ))
+    cmd.spawn()
+        .map_err(|e| format!("Failed to start {}: {e}", kind.binary_name()))
 }
 
 fn resolve_service_binary<R: tauri::Runtime>(

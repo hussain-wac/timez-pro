@@ -234,7 +234,12 @@ mod platform {
     extern "system" {
         fn GetLastInputInfo(plii: *mut LASTINPUTINFO) -> i32;
         fn GetTickCount() -> u32;
-        fn GetForegroundWindow() -> isize;
+        fn OpenInputDesktop(
+            dw_flags: u32,
+            f_inherit: i32,
+            dw_desired_access: u32,
+        ) -> *mut std::ffi::c_void;
+        fn CloseDesktop(h_desktop: *mut std::ffi::c_void) -> i32;
     }
 
     pub struct IdleDetector;
@@ -253,15 +258,27 @@ mod platform {
 
                 if GetLastInputInfo(&mut lii) != 0 {
                     let idle_ms = GetTickCount().wrapping_sub(lii.dw_time);
-                    (idle_ms / 1000) as u64
+                    u64::from(idle_ms / 1000)
                 } else {
                     0
                 }
             }
         }
 
+        /// Detects if the Windows workstation is locked using OpenInputDesktop.
         pub fn is_locked(&self) -> bool {
-            unsafe { GetForegroundWindow() == 0 }
+            // DESKTOP_SWITCHDESKTOP = 0x0100
+            const DESKTOP_SWITCHDESKTOP: u32 = 0x0100;
+
+            unsafe {
+                let desktop = OpenInputDesktop(0, 0, DESKTOP_SWITCHDESKTOP);
+                if desktop.is_null() {
+                    true
+                } else {
+                    CloseDesktop(desktop);
+                    false
+                }
+            }
         }
     }
 }
@@ -328,7 +345,7 @@ pub fn spawn_idle_monitor(
 
             // Log every 10 iterations (~20 seconds)
             log_counter += 1;
-            if log_counter % 10 == 0 {
+            if log_counter.is_multiple_of(10) {
                 eprintln!(
                     "[idle] status: idle_secs={}, is_idle={}, paused_task={:?}",
                     system_idle_secs, is_idle, paused_task_id

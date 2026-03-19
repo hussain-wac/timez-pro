@@ -69,15 +69,47 @@ pub fn run_server<F>(port: u16, parent_pid: Option<u32>, handler: F) -> Result<(
 where
     F: Fn(Request) -> Result<ResponseData, String> + Send + Sync + 'static,
 {
-    let addr = format!("127.0.0.1:{}", port);
-    let listener = TcpListener::bind(&addr)
-        .map_err(|e| format!("Failed to bind {}: {e}", addr))?;
+    use std::net::SocketAddr;
 
+    let addr: SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .map_err(|e| format!("Invalid address: {e}"))?;
+
+    // Try binding with retries in case of port conflicts from crashed services
+    let listener = {
+        let mut last_error = None;
+        let mut attempts = 0;
+        loop {
+            match TcpListener::bind(addr) {
+                Ok(l) => break l,
+                Err(e) => {
+                    attempts += 1;
+                    last_error = Some(e);
+                    if attempts >= 3 {
+                        return Err(format!(
+                            "Failed to bind {} after {} attempts: {}",
+                            addr,
+                            attempts,
+                            last_error.unwrap()
+                        ));
+                    }
+                    // Wait briefly before retry
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        }
+    };
+
+    eprintln!("[service] Listening on {addr}");
     spawn_parent_watchdog(parent_pid, None, Some(port));
 
     for stream in listener.incoming() {
         let shutdown = match stream {
-            Ok(stream) => handle_stream(stream, &handler),
+            Ok(stream) => {
+                // Set read timeout to prevent hanging on malformed requests
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+                handle_stream(stream, &handler)
+            }
             Err(e) => {
                 eprintln!("[service] Failed to accept connection: {e}");
                 false

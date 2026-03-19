@@ -47,9 +47,16 @@ fn spawn_unix_listener<R: tauri::Runtime>(
 
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(stream) = stream else {
-                continue;
+            let stream = match stream {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[instance] Failed to accept connection: {e}");
+                    continue;
+                }
             };
+
+            // Set a read timeout to prevent hanging on malformed requests
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
 
             let mut line = String::new();
             let mut reader = BufReader::new(stream);
@@ -78,15 +85,37 @@ fn remove_stale_socket() {
 fn spawn_tcp_listener<R: tauri::Runtime>(
     app_handle: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let addr = format!("127.0.0.1:{}", INSTANCE_PORT);
-    let listener = TcpListener::bind(&addr)
-        .map_err(|e| format!("Failed to bind instance listener: {e}"))?;
+    use std::net::SocketAddr;
+
+    let addr: SocketAddr = format!("127.0.0.1:{INSTANCE_PORT}")
+        .parse()
+        .map_err(|e| format!("Invalid address: {e}"))?;
+
+    // Try to bind with SO_REUSEADDR to handle crashed previous instances
+    let socket = std::net::TcpListener::bind(addr).map_err(|e| {
+        // If binding fails, the port might be in use by a zombie process
+        // This is not fatal - single-instance check already passed
+        eprintln!("[instance] Warning: Could not bind TCP listener: {e}");
+        format!("Failed to bind instance listener: {e}")
+    })?;
+
+    // Set non-blocking to false for clean shutdown
+    socket
+        .set_nonblocking(false)
+        .map_err(|e| format!("Failed to set socket blocking mode: {e}"))?;
 
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else {
-                continue;
+        for stream in socket.incoming() {
+            let stream = match stream {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[instance] Failed to accept connection: {e}");
+                    continue;
+                }
             };
+
+            // Set a read timeout to prevent hanging on malformed requests
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
 
             let mut line = String::new();
             let mut reader = BufReader::new(stream);

@@ -9,6 +9,14 @@ use crate::api::AuthTokenState;
 use crate::constants::SYNC_INTERVAL_SECS;
 use crate::models::Task;
 
+/// Information returned when stopping a timer locally.
+#[derive(Debug)]
+pub struct StopInfo {
+    pub task_id: i64,
+    pub started_at: chrono::DateTime<Utc>,
+    pub elapsed_secs: i64,
+}
+
 /// Local timer state that tracks everything without hitting the external API.
 ///
 /// The external API is only called every `SYNC_INTERVAL_SECS` for persistence.
@@ -182,45 +190,55 @@ impl TimerStateInner {
         Ok(())
     }
 
-    /// Stop the currently running timer locally (no API call)
-    pub fn stop_current_local(&mut self) -> Option<i64> {
-        if let Some(task_id) = self.running_task_id {
-            if let Some(started) = self.timer_started_at {
-                let elapsed = (Utc::now() - started).num_seconds().max(0);
-                let base = self.base_elapsed.entry(task_id).or_insert(0);
-                *base += elapsed;
-            }
-            self.running_task_id = None;
-            self.timer_started_at = None;
-            self.last_task_id = Some(task_id);
-            return Some(task_id);
-        }
-        None
+    /// Stop the currently running timer locally (no API call).
+    ///
+    /// Returns information about the stopped timer, or `None` if no timer was running.
+    pub fn stop_current_local(&mut self) -> Option<StopInfo> {
+        let task_id = self.running_task_id?;
+        let started_at = self.timer_started_at?;
+
+        let elapsed = (Utc::now() - started_at).num_seconds().max(0);
+        let base = self.base_elapsed.entry(task_id).or_insert(0);
+        *base += elapsed;
+
+        self.running_task_id = None;
+        self.timer_started_at = None;
+        self.last_task_id = Some(task_id);
+
+        Some(StopInfo {
+            task_id,
+            started_at,
+            elapsed_secs: elapsed,
+        })
     }
 
-    /// Stop the currently running timer and sync to backend
+    /// Stop the currently running timer and sync to backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if synchronization fails, though timing data is preserved locally.
     pub fn stop_current(&mut self, token: &Option<String>) -> Result<(), String> {
-        if let Some(task_id) = self.stop_current_local() {
-            // Calculate elapsed and sync to backend
-            if let Some(started_at) = self.timer_started_at {
-                let elapsed = (chrono::Utc::now() - started_at).num_seconds().max(0);
-                let client_started = started_at.to_rfc3339();
+        if let Some(info) = self.stop_current_local() {
+            // Sync to backend if there's meaningful elapsed time
+            if info.elapsed_secs > 0 {
+                let client_started = info.started_at.to_rfc3339();
                 let client_stopped = chrono::Utc::now().to_rfc3339();
 
-                if elapsed > 0 {
-                    match api::sync_time(
-                        task_id,
-                        elapsed,
-                        &client_started,
-                        Some(&client_stopped),
-                        token,
-                    ) {
-                        Ok(_response) => {
-                            println!("[timer] Stop synced {} seconds for task {}", elapsed, task_id);
-                        }
-                        Err(e) => {
-                            eprintln!("[timer] Failed to sync stop: {}", e);
-                        }
+                match api::sync_time(
+                    info.task_id,
+                    info.elapsed_secs,
+                    &client_started,
+                    Some(&client_stopped),
+                    token,
+                ) {
+                    Ok(_response) => {
+                        println!(
+                            "[timer] Stop synced {} seconds for task {}",
+                            info.elapsed_secs, info.task_id
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("[timer] Failed to sync stop: {e}");
                     }
                 }
             }
