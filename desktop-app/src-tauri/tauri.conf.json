@@ -24,13 +24,13 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": {
-      "resources/timez-auth-service": "timez-auth-service",
-      "resources/timez-task-service": "timez-task-service",
-      "resources/timez-tracker-service": "timez-tracker-service",
-      "resources/timez-idle-time-service": "timez-idle-time-service",
-      "resources/timez-quit-service": "timez-quit-service"
-    },
+    "resources": [
+      "resources/timez-auth-service*",
+      "resources/timez-task-service*",
+      "resources/timez-tracker-service*",
+      "resources/timez-idle-time-service*",
+      "resources/timez-quit-service*"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
