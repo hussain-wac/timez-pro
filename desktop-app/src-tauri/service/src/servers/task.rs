@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
 use timez_core::api;
-use timez_core::format_duration;
 use timez_core::models::{MidnightResetEvent, Project, SyncQueueStatus, Task, TimerStatus};
 use timez_core::protocol::{Request, ResponseData};
 use timez_core::timer_state::TimerStateInner;
@@ -258,8 +257,6 @@ fn list_project_tasks(
 }
 
 fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>, sync_queue: Arc<SyncQueue>) {
-    use timez_core::api;
-
     const SYNC_INTERVAL_SECS: u64 = 30;
     // Shorter interval for checking retry queue
     const RETRY_CHECK_INTERVAL_SECS: u64 = 5;
