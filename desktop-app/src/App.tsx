@@ -85,6 +85,9 @@ function App() {
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const isTimerRunningRef = useRef(false); // Ref for use in interval
 
+  // Track if timer is paused due to idle detection
+  const isIdlePausedRef = useRef(false);
+
   // Refs for drift-free timer calculation
   const timerStartedAtRef = useRef<number | null>(null); // Timestamp when timer started (ms)
   const baseElapsedRef = useRef(0); // Task elapsed seconds at start point
@@ -246,7 +249,19 @@ function App() {
       try {
         const event = await invoke<IdleEvent | null>("get_idle_event");
         setIdleEvent((prev) => {
-          if (!event) return null;
+          if (!event) {
+            return null;
+          }
+          // If this is a new idle event, pause the timer
+          if (event && !isIdlePausedRef.current && timerStartedAtRef.current) {
+            const now = Date.now();
+            const elapsedSinceStart = Math.floor((now - timerStartedAtRef.current) / 1000);
+            // Update base values with current progress (excluding idle time)
+            baseElapsedRef.current = baseElapsedRef.current + elapsedSinceStart - event.idle_duration_secs;
+            baseDailyTotalRef.current = baseDailyTotalRef.current + elapsedSinceStart - event.idle_duration_secs;
+            timerStartedAtRef.current = now;
+            isIdlePausedRef.current = true;
+          }
           if (prev && prev.task_id === event.task_id &&
               prev.idle_duration_secs === event.idle_duration_secs &&
               prev.tracking_active === event.tracking_active) {
@@ -286,6 +301,9 @@ function App() {
       // Use ref to check running state (avoids recreating interval)
       if (!isTimerRunningRef.current || !timerStartedAtRef.current) return;
 
+      // Skip ticking if paused due to idle detection
+      if (isIdlePausedRef.current) return;
+
       // Calculate actual elapsed time from timestamp - this prevents drift
       const now = Date.now();
       const elapsedSinceStart = Math.floor((now - timerStartedAtRef.current) / 1000);
@@ -318,6 +336,20 @@ function App() {
     const unlisten1 = listen<IdleEvent>("idle-detected", (event) => {
       setIdleEvent(event.payload);
       setIdleTaskId((prev) => prev ?? event.payload.task_id);
+
+      // Pause the main timer - save current state before pausing
+      if (timerStartedAtRef.current && !isIdlePausedRef.current) {
+        const now = Date.now();
+        const elapsedSinceStart = Math.floor((now - timerStartedAtRef.current) / 1000);
+        // Update base values with current progress (excluding idle time)
+        // The idle time will be added back if user keeps it
+        baseElapsedRef.current = baseElapsedRef.current + elapsedSinceStart - event.payload.idle_duration_secs;
+        baseDailyTotalRef.current = baseDailyTotalRef.current + elapsedSinceStart - event.payload.idle_duration_secs;
+        // Reset the start timestamp for when we resume
+        timerStartedAtRef.current = now;
+        isIdlePausedRef.current = true;
+      }
+
       refreshTasks();
     });
 
@@ -464,9 +496,14 @@ function App() {
         taskId: idleTaskId,
         durationSecs: idleEvent.idle_duration_secs,
       });
-      // Add idle time to daily total
-      setDailyTotal((prev) => prev + idleEvent.idle_duration_secs);
-      baseDailyTotalRef.current = dailyTotal + idleEvent.idle_duration_secs;
+      // Add idle time back to base values (it was excluded when paused)
+      baseElapsedRef.current = baseElapsedRef.current + idleEvent.idle_duration_secs;
+      baseDailyTotalRef.current = baseDailyTotalRef.current + idleEvent.idle_duration_secs;
+      // Update displayed daily total
+      setDailyTotal(baseDailyTotalRef.current);
+      // Resume the timer - reset start timestamp to now
+      timerStartedAtRef.current = Date.now();
+      isIdlePausedRef.current = false;
       // Refresh to get updated state
       await refreshTasks();
       await invoke("resolve_idle_event");
@@ -474,6 +511,7 @@ function App() {
       setIdleTaskId(null);
     } catch (error) {
       console.error("Keep idle time failed:", error);
+      isIdlePausedRef.current = false; // Resume even on error
       await refreshTasks();
     }
   };
@@ -484,9 +522,11 @@ function App() {
       await invoke<Task[]>("discard_idle_time", {
         taskId: idleEvent.task_id,
       });
-      // Subtract idle time from daily total (it was already counted while idle)
-      setDailyTotal((prev) => Math.max(0, prev - idleEvent.idle_duration_secs));
-      baseDailyTotalRef.current = Math.max(0, dailyTotal - idleEvent.idle_duration_secs);
+      // Idle time was already excluded when paused, so just update displayed total
+      setDailyTotal(baseDailyTotalRef.current);
+      // Resume the timer - reset start timestamp to now
+      timerStartedAtRef.current = Date.now();
+      isIdlePausedRef.current = false;
       // Refresh to get updated state
       await refreshTasks();
       await invoke("resolve_idle_event");
@@ -494,6 +534,7 @@ function App() {
       setIdleTaskId(null);
     } catch (error) {
       console.error("Discard idle time failed:", error);
+      isIdlePausedRef.current = false; // Resume even on error
       await refreshTasks();
     }
   };
