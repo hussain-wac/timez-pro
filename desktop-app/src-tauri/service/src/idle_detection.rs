@@ -134,11 +134,8 @@ mod linux {
             "/org/gnome/Mutter/IdleMonitor/Core",
             Duration::from_millis(500),
         );
-        let result: Result<(u64,), _> = proxy.method_call(
-            "org.gnome.Mutter.IdleMonitor",
-            "GetIdletime",
-            (),
-        );
+        let result: Result<(u64,), _> =
+            proxy.method_call("org.gnome.Mutter.IdleMonitor", "GetIdletime", ());
         result.ok().map(|(ms,)| ms / 1000)
     }
 
@@ -148,11 +145,8 @@ mod linux {
             "/org/freedesktop/ScreenSaver",
             Duration::from_millis(500),
         );
-        let result: Result<(u32,), _> = proxy.method_call(
-            "org.freedesktop.ScreenSaver",
-            "GetSessionIdleTime",
-            (),
-        );
+        let result: Result<(u32,), _> =
+            proxy.method_call("org.freedesktop.ScreenSaver", "GetSessionIdleTime", ());
         result.ok().map(|(ms,)| (ms / 1000) as u64)
     }
 

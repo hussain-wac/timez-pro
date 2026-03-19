@@ -9,7 +9,9 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, State};
 use timez_core::api;
-use timez_core::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, Project, Task, TimerStatus};
+use timez_core::models::{
+    ActivityStats, AuthResponse, AuthUser, IdleEvent, Project, Task, TimerStatus,
+};
 use timez_core::protocol::Request;
 
 const POLL_INTERVAL_SECS: u64 = 2;
@@ -171,7 +173,10 @@ fn maintain_idle_window_state<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R
     }
 }
 
-fn clear_idle_window_state<R: tauri::Runtime>(_app_handle: &tauri::AppHandle<R>) {}
+#[allow(clippy::unnecessary_wraps)]
+fn clear_idle_window_state<R: tauri::Runtime>(_app_handle: &tauri::AppHandle<R>) {
+    // Currently a no-op, but placeholder for future cleanup logic
+}
 
 fn spawn_event_bridge<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) {
     std::thread::spawn(move || {
@@ -325,7 +330,10 @@ fn list_projects(service: State<'_, ServiceManager>) -> Result<Vec<Project>, Str
 }
 
 #[tauri::command]
-fn list_project_tasks(project_id: i64, service: State<'_, ServiceManager>) -> Result<Vec<Task>, String> {
+fn list_project_tasks(
+    project_id: i64,
+    service: State<'_, ServiceManager>,
+) -> Result<Vec<Task>, String> {
     ipc::decode_tasks(request(service, Request::ListProjectTasks { project_id })?)
 }
 

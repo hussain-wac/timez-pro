@@ -616,7 +616,16 @@ def get_my_projects(
     for project in projects:
         creator = db.query(User).filter(User.id == project.created_by).first()
         member_count = db.query(ProjectMember).filter(ProjectMember.project_id == project.id).count()
-        task_count = db.query(Task).filter(Task.project_id == project.id).count()
+
+        # Count only in_progress tasks in the project (matches what desktop app shows)
+        task_count = (
+            db.query(Task)
+            .filter(
+                Task.project_id == project.id,
+                Task.status == "in_progress",
+            )
+            .count()
+        )
 
         total_seconds = (
             db.query(func.coalesce(func.sum(TimeEntry.duration), 0))

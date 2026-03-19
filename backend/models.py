@@ -41,7 +41,12 @@ class User(Base):
     # Relationships
     time_entries = relationship("TimeEntry", back_populates="user", cascade="all, delete-orphan")
     project_memberships = relationship("ProjectMember", back_populates="user", cascade="all, delete-orphan")
-    task_assignments = relationship("TaskAssignment", back_populates="user", cascade="all, delete-orphan")
+    task_assignments = relationship(
+        "TaskAssignment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="TaskAssignment.user_id"
+    )
     created_projects = relationship("Project", back_populates="creator", foreign_keys="Project.created_by")
     created_tasks = relationship("Task", back_populates="creator", foreign_keys="Task.created_by")
 

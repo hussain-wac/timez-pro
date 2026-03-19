@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -81,6 +81,11 @@ function App() {
   const [crashRecoveredTaskId, setCrashRecoveredTaskId] = useState<number | null>(null);
   const [syncNotification, setSyncNotification] = useState<string | null>(null);
 
+  // Track daily total - increments locally every second, syncs on stop/start
+  const [dailyTotal, setDailyTotal] = useState(0);
+  const [isTimerRunning, setIsTimerRunning] = useState(false);
+  const isTimerRunningRef = useRef(false); // Ref for use in interval
+
   const refreshProjects = useCallback(async () => {
     try {
       const result = await invoke<Project[]>("list_projects");
@@ -94,43 +99,71 @@ function App() {
     }
   }, [selectedProjectId]);
 
+  // Fetch ALL tasks to calculate daily total (only on init and after stop)
+  const refreshDailyTotal = useCallback(async () => {
+    try {
+      const result = await invoke<Task[]>("list_tasks");
+      if (result) {
+        // Calculate total from server values
+        const total = result.reduce((sum, t) => sum + t.elapsed_secs, 0);
+        setDailyTotal(total);
+        // Check if any task is running
+        const running = result.some((t) => t.running);
+        setIsTimerRunning(running);
+      }
+    } catch (error) {
+      console.error("Failed to refresh daily total:", error);
+    }
+  }, []);
+
   const refreshTasks = useCallback(async () => {
     try {
       if (selectedProjectId !== null) {
         const result = await invoke<Task[]>("list_project_tasks", { projectId: selectedProjectId });
-        setTasks(result);
+        if (result) {
+          setTasks(result);
+          // Check if any task is running
+          const running = result.some((t) => t.running);
+          if (running) {
+            setIsTimerRunning(true);
+          }
+        }
       } else {
-        // Fall back to all tasks if no project selected
         const result = await invoke<Task[]>("list_tasks");
-        setTasks(result);
+        if (result) {
+          setTasks(result);
+          const running = result.some((t) => t.running);
+          if (running) {
+            setIsTimerRunning(true);
+          }
+        }
       }
-    } catch {
-      // API may be unreachable
+    } catch (error) {
+      console.error("Failed to refresh tasks:", error);
     }
   }, [selectedProjectId]);
 
+  // Initial load
   useEffect(() => {
     refreshProjects();
-  }, [refreshProjects]);
+    refreshDailyTotal();
+  }, []);
 
+  // Refresh tasks when project changes
   useEffect(() => {
     refreshTasks();
-  }, [refreshTasks]);
+  }, [selectedProjectId]);
 
+  // Check for idle events
   useEffect(() => {
     const id = setInterval(async () => {
       try {
         const event = await invoke<IdleEvent | null>("get_idle_event");
         setIdleEvent((prev) => {
-          if (!event) {
-            return null;
-          }
-          if (
-            prev &&
-            prev.task_id === event.task_id &&
-            prev.idle_duration_secs === event.idle_duration_secs &&
-            prev.tracking_active === event.tracking_active
-          ) {
+          if (!event) return null;
+          if (prev && prev.task_id === event.task_id &&
+              prev.idle_duration_secs === event.idle_duration_secs &&
+              prev.tracking_active === event.tracking_active) {
             return prev;
           }
           return event;
@@ -138,36 +171,51 @@ function App() {
         if (event) {
           setIdleTaskId((prev) => prev ?? event.task_id);
         }
-        if (event?.tracking_active) {
-          refreshTasks();
-        }
       } catch {
         // backend may be restarting
       }
     }, 1000);
-
     return () => clearInterval(id);
-  }, [refreshTasks]);
+  }, []);
 
-  // Sync with backend every 5 seconds
+  // Sync tasks with backend every 30 seconds (not daily total while running)
   useEffect(() => {
     const id = setInterval(() => {
       refreshTasks();
-    }, 5000);
+      // Only sync daily total if no timer is running (to prevent jumps)
+      if (!isTimerRunningRef.current) {
+        refreshDailyTotal();
+      }
+    }, 30000);
     return () => clearInterval(id);
-  }, [refreshTasks]);
+  }, [refreshTasks, refreshDailyTotal]);
 
-  // Locally tick the running task every second for smooth display
+  // Keep ref in sync with state
   useEffect(() => {
+    isTimerRunningRef.current = isTimerRunning;
+  }, [isTimerRunning]);
+
+  // Local tick for smooth real-time display - runs once, uses ref
+  useEffect(() => {
+    let lastTick = Date.now();
     const id = setInterval(() => {
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.running ? { ...t, elapsed_secs: t.elapsed_secs + 1 } : t,
-        ),
-      );
+      const now = Date.now();
+      // Guard against double-ticks (must be at least 900ms since last tick)
+      if (now - lastTick < 900) return;
+      lastTick = now;
+
+      // Use ref to check running state (avoids recreating interval)
+      if (isTimerRunningRef.current) {
+        setDailyTotal((dt) => dt + 1);
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.running ? { ...t, elapsed_secs: t.elapsed_secs + 1 } : t,
+          )
+        );
+      }
     }, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, []); // Empty deps - interval created once
 
   // Listen for events from Rust backend
   useEffect(() => {
@@ -247,14 +295,36 @@ function App() {
 
   const toggleTimer = async (taskId: number) => {
     const task = tasks.find((t) => t.id === taskId);
-    if (task?.running) {
-      const result = await invoke<Task[]>("stop_timer");
-      setTasks(result);
-    } else {
-      const result = await invoke<Task[]>("start_timer", { taskId });
-      setTasks(result);
+    try {
+      if (task?.running) {
+        // Stop the timer
+        await invoke<Task[]>("stop_timer");
+        // Update local state immediately for responsive UI
+        setTasks((prev) =>
+          prev.map((t) => (t.id === taskId ? { ...t, running: false } : t))
+        );
+        setIsTimerRunning(false);
+        // Sync daily total from server after stopping
+        await refreshDailyTotal();
+      } else {
+        // Start the timer
+        await invoke<Task[]>("start_timer", { taskId });
+        // Update local state immediately for responsive UI
+        setTasks((prev) =>
+          prev.map((t) => ({
+            ...t,
+            running: t.id === taskId,
+          }))
+        );
+        setIsTimerRunning(true);
+      }
+      setSelectedTaskId(taskId);
+    } catch (error) {
+      console.error("Timer toggle failed:", error);
+      // On error, refresh to get correct state
+      await refreshTasks();
+      await refreshDailyTotal();
     }
-    setSelectedTaskId(taskId);
   };
 
   const handleConfirmQuit = async () => {
@@ -272,25 +342,39 @@ function App() {
 
   const handleKeepIdleTime = async () => {
     if (!idleEvent || idleEvent.tracking_active || !idleTaskId) return;
-    const result = await invoke<Task[]>("add_idle_time", {
-      taskId: idleTaskId,
-      durationSecs: idleEvent.idle_duration_secs,
-    });
-    setTasks(result);
-    await invoke("resolve_idle_event");
-    setIdleEvent(null);
-    setIdleTaskId(null);
+    try {
+      await invoke<Task[]>("add_idle_time", {
+        taskId: idleTaskId,
+        durationSecs: idleEvent.idle_duration_secs,
+      });
+      // Refresh to get updated state
+      await refreshTasks();
+      await refreshDailyTotal();
+      await invoke("resolve_idle_event");
+      setIdleEvent(null);
+      setIdleTaskId(null);
+    } catch (error) {
+      console.error("Keep idle time failed:", error);
+      await refreshTasks();
+    }
   };
 
   const handleDiscardIdleTime = async () => {
     if (!idleEvent || idleEvent.tracking_active) return;
-    const result = await invoke<Task[]>("discard_idle_time", {
-      taskId: idleEvent.task_id,
-    });
-    setTasks(result);
-    await invoke("resolve_idle_event");
-    setIdleEvent(null);
-    setIdleTaskId(null);
+    try {
+      await invoke<Task[]>("discard_idle_time", {
+        taskId: idleEvent.task_id,
+      });
+      // Refresh to get updated state
+      await refreshTasks();
+      await refreshDailyTotal();
+      await invoke("resolve_idle_event");
+      setIdleEvent(null);
+      setIdleTaskId(null);
+    } catch (error) {
+      console.error("Discard idle time failed:", error);
+      await refreshTasks();
+    }
   };
 
   const filteredProjects = projects.filter((p) =>
@@ -303,7 +387,8 @@ function App() {
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const selectedTask = tasks.find((t) => t.id === selectedTaskId);
-  const totalDaySeconds = tasks.reduce((sum, t) => sum + t.elapsed_secs, 0);
+  // Today's total - runs in real-time locally
+  const totalDaySeconds = dailyTotal;
 
   return (
     <div className="h-screen flex bg-gray-100 text-gray-800 select-none overflow-hidden">

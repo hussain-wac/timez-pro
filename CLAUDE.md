@@ -116,3 +116,35 @@ Use for React code in `dashboard/` and `desktop-app/src/`. Invoke for:
 - State management patterns
 - Accessibility compliance
 - Production-grade React patterns
+
+### tauri-frontend-engineer
+Use for React + Tauri integration in `desktop-app/src/`. Invoke for:
+- Tauri invoke() and event listener patterns
+- React-to-Rust communication architecture
+- Desktop app UX (keyboard shortcuts, system notifications)
+- Custom hooks for Tauri commands
+- Performance optimization in desktop context
+
+### fastapi-backend-architect
+Use for Python/FastAPI code in `backend/`. Invoke for:
+- API endpoint design and implementation
+- Database schema design and migrations
+- Query optimization and performance
+- Authentication/authorization flows
+- Pydantic schema design
+
+### senior-engineer
+Use for complex cross-cutting tasks. Invoke for:
+- Production-grade code implementation
+- Architecture decisions and planning
+- Code review and refactoring
+- Debugging complex issues
+- Translating requirements into technical solutions
+
+### business-analyst-architect
+Use for requirements analysis and planning. Invoke for:
+- Transforming vague requirements into technical specs
+- Feature decomposition and task distribution
+- User stories and acceptance criteria
+- System design documentation
+- Stakeholder communication

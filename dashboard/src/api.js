@@ -30,6 +30,33 @@ export const api = {
     return res.json();
   },
 
+  async put(endpoint, data) {
+    const res = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async delete(endpoint) {
+    const res = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // DELETE may return empty response
+    if (res.status === 204) return null;
+    return res.json();
+  },
+
   async login(token) {
     console.log('API login called with token:', token ? 'present' : 'missing');
     const res = await fetch(`${API_BASE}/api/auth/google`, {
@@ -75,20 +102,20 @@ export const dashboardApi = {
   },
 
   // Project Management
-  getProjects: () => api.get('/api/dashboard/projects'),
-  createProject: (data) => api.post('/api/dashboard/projects', data),
-  getProject: (id) => api.get(`/api/dashboard/projects/${id}`),
-  updateProject: (id, data) => api.post(`/api/dashboard/projects/${id}`, data),
-  deleteProject: (id) => api.post(`/api/dashboard/projects/${id}/delete`, {}),
+  getProjects: () => api.get('/api/projects'),
+  createProject: (data) => api.post('/api/projects', data),
+  getProject: (id) => api.get(`/api/projects/${id}`),
+  updateProject: (id, data) => api.put(`/api/projects/${id}`, data),
+  deleteProject: (id) => api.delete(`/api/projects/${id}`),
 
   // Project Members
-  getProjectMembers: (projectId) => api.get(`/api/dashboard/projects/${projectId}/members`),
-  addProjectMembers: (projectId, userIds) => api.post(`/api/dashboard/projects/${projectId}/members`, { user_ids: userIds }),
-  removeProjectMember: (projectId, userId) => api.post(`/api/dashboard/projects/${projectId}/members/remove`, { user_id: userId }),
+  getProjectMembers: (projectId) => api.get(`/api/projects/${projectId}/members`),
+  addProjectMembers: (projectId, userIds, role = 'member') => api.post(`/api/projects/${projectId}/members`, { user_ids: userIds, role }),
+  removeProjectMember: (projectId, userId) => api.delete(`/api/projects/${projectId}/members/${userId}`),
 
   // Project Tasks
-  getProjectTasks: (projectId) => api.get(`/api/dashboard/projects/${projectId}/tasks`),
-  createProjectTask: (projectId, data) => api.post(`/api/dashboard/projects/${projectId}/tasks`, data),
-  assignTaskToUsers: (taskId, userIds) => api.post(`/api/dashboard/tasks/${taskId}/assign-users`, { user_ids: userIds }),
-  unassignTaskUser: (taskId, userId) => api.post(`/api/dashboard/tasks/${taskId}/unassign`, { user_id: userId }),
+  getProjectTasks: (projectId) => api.get(`/api/projects/${projectId}/tasks`),
+  createProjectTask: (projectId, data) => api.post(`/api/projects/${projectId}/tasks`, data),
+  assignTaskToUsers: (taskId, userIds, primaryUserId = null) => api.post(`/api/tasks/${taskId}/assign`, { user_ids: userIds, primary_user_id: primaryUserId }),
+  unassignTaskUser: (taskId, userId) => api.delete(`/api/tasks/${taskId}/assign/${userId}`),
 };

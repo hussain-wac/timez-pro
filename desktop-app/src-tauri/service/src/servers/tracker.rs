@@ -75,8 +75,7 @@ fn spawn_tracker(state: Arc<Mutex<TrackerState>>) {
 
         eprintln!(
             "[tracker] Activity tracker started (poll={}s, active_threshold={}s)",
-            POLL_INTERVAL_SECS,
-            ACTIVE_THRESHOLD_SECS
+            POLL_INTERVAL_SECS, ACTIVE_THRESHOLD_SECS
         );
 
         loop {

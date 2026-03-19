@@ -13,7 +13,6 @@ use std::os::unix::net::UnixListener;
 #[cfg(unix)]
 use std::path::Path;
 
-
 #[cfg(unix)]
 const INSTANCE_SOCKET_PATH: &str = "/tmp/timez-app.sock";
 
@@ -35,9 +34,7 @@ pub fn spawn_show_listener<R: tauri::Runtime>(
 }
 
 #[cfg(unix)]
-fn spawn_unix_listener<R: tauri::Runtime>(
-    app_handle: tauri::AppHandle<R>,
-) -> Result<(), String> {
+fn spawn_unix_listener<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) -> Result<(), String> {
     remove_stale_socket();
 
     let listener = UnixListener::bind(INSTANCE_SOCKET_PATH)
@@ -80,9 +77,7 @@ fn remove_stale_socket() {
 }
 
 #[cfg(windows)]
-fn spawn_tcp_listener<R: tauri::Runtime>(
-    app_handle: tauri::AppHandle<R>,
-) -> Result<(), String> {
+fn spawn_tcp_listener<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) -> Result<(), String> {
     use std::net::SocketAddr;
 
     let addr: SocketAddr = format!("127.0.0.1:{INSTANCE_PORT}")

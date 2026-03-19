@@ -90,8 +90,8 @@ mod platform {
 
     impl IdleDetector {
         pub fn new() -> Result<Self, String> {
-            let conn = Connection::new_session()
-                .map_err(|e| format!("D-Bus connection failed: {}", e))?;
+            let conn =
+                Connection::new_session().map_err(|e| format!("D-Bus connection failed: {}", e))?;
             Ok(Self { conn })
         }
 
@@ -114,11 +114,8 @@ mod platform {
                 "/org/gnome/Mutter/IdleMonitor/Core",
                 Duration::from_millis(500),
             );
-            let result: Result<(u64,), _> = proxy.method_call(
-                "org.gnome.Mutter.IdleMonitor",
-                "GetIdletime",
-                (),
-            );
+            let result: Result<(u64,), _> =
+                proxy.method_call("org.gnome.Mutter.IdleMonitor", "GetIdletime", ());
             result.ok().map(|(ms,)| ms / 1000)
         }
 
@@ -128,11 +125,8 @@ mod platform {
                 "/org/freedesktop/ScreenSaver",
                 Duration::from_millis(500),
             );
-            let result: Result<(u32,), _> = proxy.method_call(
-                "org.freedesktop.ScreenSaver",
-                "GetSessionIdleTime",
-                (),
-            );
+            let result: Result<(u32,), _> =
+                proxy.method_call("org.freedesktop.ScreenSaver", "GetSessionIdleTime", ());
             result.ok().map(|(ms,)| (ms / 1000) as u64)
         }
 
@@ -317,7 +311,10 @@ pub fn spawn_idle_monitor(
     idle_threshold_secs: u64,
 ) {
     std::thread::spawn(move || {
-        eprintln!("[idle] Idle monitor thread started (threshold={}s)", idle_threshold_secs);
+        eprintln!(
+            "[idle] Idle monitor thread started (threshold={}s)",
+            idle_threshold_secs
+        );
 
         let detector = match IdleDetector::new() {
             Ok(d) => {
@@ -393,14 +390,16 @@ pub fn spawn_idle_monitor(
                 }
             } else if !is_idle && (system_idle_secs >= idle_threshold_secs || is_locked) {
                 // IDLE DETECTED
-                idle_started_at = Some(Utc::now() - chrono::Duration::seconds(system_idle_secs as i64));
+                idle_started_at =
+                    Some(Utc::now() - chrono::Duration::seconds(system_idle_secs as i64));
                 is_idle = true;
 
                 let task_info = {
                     match timer_state.lock() {
                         Ok(s) => {
                             if let Some(task_id) = s.running_task_id {
-                                let task_name = s.cached_tasks
+                                let task_name = s
+                                    .cached_tasks
                                     .iter()
                                     .find(|t| t.id == task_id)
                                     .map(|t| t.name.clone())

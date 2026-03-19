@@ -55,7 +55,9 @@ pub fn read_token() -> Option<String> {
 ///
 /// Returns an error if serialization or file writing fails.
 pub fn write_token(token: Option<String>) -> Result<(), String> {
-    let store = AuthStore { access_token: token };
+    let store = AuthStore {
+        access_token: token,
+    };
     let payload = serde_json::to_string(&store).map_err(|err| err.to_string())?;
     fs::write(get_auth_store_path(), payload).map_err(|err| err.to_string())
 }

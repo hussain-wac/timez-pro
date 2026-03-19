@@ -7,6 +7,10 @@ pub struct Task {
     pub budget_secs: i64,
     pub elapsed_secs: i64,
     pub running: bool,
+    /// Project this task belongs to
+    pub project_id: Option<i64>,
+    /// Project name (for display)
+    pub project_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

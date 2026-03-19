@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
+use timez_core::api;
 use timez_core::format_duration;
 use timez_core::models::{MidnightResetEvent, Project, Task, TimerStatus};
 use timez_core::protocol::{Request, ResponseData};
 use timez_core::timer_state::TimerStateInner;
-use timez_core::api;
 
 use crate::auth_store;
 use crate::runtime;
@@ -25,11 +25,9 @@ pub fn run(parent_pid: Option<u32>) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        runtime::run_server(
-            ServiceKind::Task.port(),
-            parent_pid,
-            move |request| handle_request(request, &timer_state),
-        )
+        runtime::run_server(ServiceKind::Task.port(), parent_pid, move |request| {
+            handle_request(request, &timer_state)
+        })
     }
 }
 
@@ -61,9 +59,10 @@ fn handle_request(
             timer_state,
         )?)),
         Request::ListProjects => Ok(ResponseData::Projects(list_projects()?)),
-        Request::ListProjectTasks { project_id } => {
-            Ok(ResponseData::Tasks(list_project_tasks(timer_state, project_id)?))
-        }
+        Request::ListProjectTasks { project_id } => Ok(ResponseData::Tasks(list_project_tasks(
+            timer_state,
+            project_id,
+        )?)),
         Request::SetActiveProject { .. } => {
             // Active project is tracked on the frontend, this is a no-op
             Ok(ResponseData::Unit)
@@ -233,7 +232,11 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
                     let total_elapsed = timer.get_total_elapsed(task_id);
                     let client_started = started_at.to_rfc3339();
 
-                    let last_synced = timer.last_synced_elapsed.get(&task_id).copied().unwrap_or(0);
+                    let last_synced = timer
+                        .last_synced_elapsed
+                        .get(&task_id)
+                        .copied()
+                        .unwrap_or(0);
                     let new_time = total_elapsed - last_synced;
 
                     println!(
@@ -244,7 +247,8 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
                     if total_elapsed > 0 && new_time > 0 {
                         println!("[sync] Syncing {} to server...", format_duration(new_time));
 
-                        match api::sync_time(task_id, total_elapsed, &client_started, None, &token) {
+                        match api::sync_time(task_id, total_elapsed, &client_started, None, &token)
+                        {
                             Ok(response) => {
                                 println!(
                                     "[sync] Handshake confirmed: task_id={}, backend_duration={:?}",
@@ -255,7 +259,10 @@ fn spawn_sync_thread(timer_state: Arc<Mutex<TimerStateInner>>) {
                                     total_elapsed, new_time, task_id
                                 );
                                 timer.mark_synced(task_id, total_elapsed);
-                                println!("[sync] {} synced successfully", format_duration(new_time));
+                                println!(
+                                    "[sync] {} synced successfully",
+                                    format_duration(new_time)
+                                );
                             }
                             Err(e) => {
                                 println!("[sync] Error: {}", e);

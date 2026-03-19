@@ -324,9 +324,28 @@ def sync_time(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    # Validate user is assigned to this task
+    # Check if user is assigned to this task
     if not is_user_assigned_to_task(db, request.task_id, current_user.id):
-        raise HTTPException(status_code=403, detail="Not assigned to this task")
+        # Auto-assign if user is a project member
+        from models import ProjectMember
+        is_project_member = (
+            db.query(ProjectMember)
+            .filter(ProjectMember.project_id == task.project_id, ProjectMember.user_id == current_user.id)
+            .first()
+        )
+        if not is_project_member:
+            raise HTTPException(status_code=403, detail="Not a member of this project")
+
+        # Auto-assign user to the task
+        logger.info(f"[sync-time] Auto-assigning user {current_user.id} to task {request.task_id}")
+        assignment = TaskAssignment(
+            task_id=request.task_id,
+            user_id=current_user.id,
+            assigned_by=current_user.id,
+            is_primary=True,
+        )
+        db.add(assignment)
+        db.commit()
 
     running = (
         db.query(TimeEntry)
@@ -374,14 +393,14 @@ def sync_time(
     ) or 0
     logger.info(f"[sync-time] Task {request.task_id} now has total duration: {total} seconds")
 
-    # Update task status and user's current task
+    # Update user's current task (but don't change task status automatically)
     if request.client_stopped_at:
-        # Timer stopped - mark task as done and clear current task
-        task.status = "done"
+        # Timer stopped - clear current task but keep task status as in_progress
         current_user.current_task_id = None
     else:
-        # Timer running - mark task as in_progress and set as current task
-        task.status = "in_progress"
+        # Timer running - set as current task and ensure status is in_progress
+        if task.status == "todo":
+            task.status = "in_progress"
         current_user.current_task_id = request.task_id
 
     db.commit()

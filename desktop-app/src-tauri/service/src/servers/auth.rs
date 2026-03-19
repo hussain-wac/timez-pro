@@ -8,16 +8,12 @@ use crate::ServiceKind;
 pub fn run(parent_pid: Option<u32>) -> Result<(), String> {
     #[cfg(unix)]
     {
-        runtime::run_server(ServiceKind::Auth.socket_path(), parent_pid, move |request| {
-            handle_request(request)
-        })
+        runtime::run_server(ServiceKind::Auth.socket_path(), parent_pid, handle_request)
     }
 
     #[cfg(windows)]
     {
-        runtime::run_server(ServiceKind::Auth.port(), parent_pid, move |request| {
-            handle_request(request)
-        })
+        runtime::run_server(ServiceKind::Auth.port(), parent_pid, handle_request)
     }
 }
 

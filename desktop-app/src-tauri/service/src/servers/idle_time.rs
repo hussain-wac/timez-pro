@@ -2,7 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use timez_core::constants::{ACTIVE_THRESHOLD_SECS, DEFAULT_IDLE_THRESHOLD_SECS, POLL_INTERVAL_SECS};
+use timez_core::constants::{
+    ACTIVE_THRESHOLD_SECS, DEFAULT_IDLE_THRESHOLD_SECS, POLL_INTERVAL_SECS,
+};
 use timez_core::models::{IdleEvent, Task};
 use timez_core::protocol::{Request, ResponseData};
 
@@ -70,8 +72,7 @@ fn spawn_idle_monitor(pending_idle_event: Arc<Mutex<Option<IdleEvent>>>) {
 
         eprintln!(
             "[idle-time] Idle monitor started (threshold={}s, poll={}s)",
-            DEFAULT_IDLE_THRESHOLD_SECS,
-            POLL_INTERVAL_SECS
+            DEFAULT_IDLE_THRESHOLD_SECS, POLL_INTERVAL_SECS
         );
 
         let mut is_idle = false;
@@ -183,8 +184,7 @@ fn current_running_task() -> Option<Task> {
 
     #[cfg(windows)]
     {
-        let response =
-            runtime::send_request(ServiceKind::Task.port(), Request::ListTasks).ok()?;
+        let response = runtime::send_request(ServiceKind::Task.port(), Request::ListTasks).ok()?;
         match response {
             ResponseData::Tasks(tasks) => tasks.into_iter().find(|task| task.running),
             _ => None,

@@ -9,7 +9,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
-use timez_core::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Project, Task, TimerStatus};
+use timez_core::models::{
+    ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Project, Task,
+    TimerStatus,
+};
 use timez_core::protocol::{Request, RequestEnvelope, ResponseData, ResponseEnvelope};
 
 const REQUEST_TOKEN: &str = "timez-local";
@@ -103,7 +106,6 @@ fn try_connect(kind: ServiceKind) -> Result<IpcStream, String> {
     TcpStream::connect(&addr).map_err(|e| e.to_string())
 }
 
-
 // ============================================================================
 // Service Manager
 // ============================================================================
@@ -117,7 +119,14 @@ pub struct ServiceManager {
     services: Mutex<Vec<ManagedService>>,
 }
 
+impl Default for ServiceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServiceManager {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             services: Mutex::new(Vec::new()),
@@ -189,13 +198,19 @@ impl ServiceManager {
             request,
         };
         let payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
-        stream.write_all(payload.as_bytes()).map_err(|e: std::io::Error| e.to_string())?;
-        stream.write_all(b"\n").map_err(|e: std::io::Error| e.to_string())?;
+        stream
+            .write_all(payload.as_bytes())
+            .map_err(|e: std::io::Error| e.to_string())?;
+        stream
+            .write_all(b"\n")
+            .map_err(|e: std::io::Error| e.to_string())?;
         stream.flush().map_err(|e: std::io::Error| e.to_string())?;
 
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e: std::io::Error| e.to_string())?;
+        reader
+            .read_line(&mut line)
+            .map_err(|e: std::io::Error| e.to_string())?;
         let response: ResponseEnvelope =
             serde_json::from_str(&line).map_err(|e| format!("Invalid response: {e}"))?;
 
@@ -251,12 +266,7 @@ fn spawn_service_process<R: tauri::Runtime>(
             .stderr(Stdio::inherit())
             .current_dir(&manifest_dir)
             .spawn()
-            .map_err(|e| {
-                format!(
-                    "Failed to start {} through cargo: {e}",
-                    kind.binary_name()
-                )
-            });
+            .map_err(|e| format!("Failed to start {} through cargo: {e}", kind.binary_name()));
     }
 
     let service_bin = resolve_service_binary(app_handle, kind)?;
@@ -329,8 +339,12 @@ fn send_shutdown(kind: ServiceKind) -> Result<(), String> {
         request: Request::Shutdown,
     };
     let payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
-    stream.write_all(payload.as_bytes()).map_err(|e: std::io::Error| e.to_string())?;
-    stream.write_all(b"\n").map_err(|e: std::io::Error| e.to_string())?;
+    stream
+        .write_all(payload.as_bytes())
+        .map_err(|e: std::io::Error| e.to_string())?;
+    stream
+        .write_all(b"\n")
+        .map_err(|e: std::io::Error| e.to_string())?;
     stream.flush().map_err(|e: std::io::Error| e.to_string())
 }
 
@@ -440,13 +454,19 @@ pub fn send_store_token(access_token: &str) -> Result<AuthUser, String> {
         },
     };
     let payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
-    stream.write_all(payload.as_bytes()).map_err(|e: std::io::Error| e.to_string())?;
-    stream.write_all(b"\n").map_err(|e: std::io::Error| e.to_string())?;
+    stream
+        .write_all(payload.as_bytes())
+        .map_err(|e: std::io::Error| e.to_string())?;
+    stream
+        .write_all(b"\n")
+        .map_err(|e: std::io::Error| e.to_string())?;
     stream.flush().map_err(|e: std::io::Error| e.to_string())?;
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line).map_err(|e: std::io::Error| e.to_string())?;
+    reader
+        .read_line(&mut line)
+        .map_err(|e: std::io::Error| e.to_string())?;
     let response: ResponseEnvelope =
         serde_json::from_str(&line).map_err(|e| format!("Invalid response: {e}"))?;
 

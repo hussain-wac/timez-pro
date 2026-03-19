@@ -52,6 +52,35 @@ fn auth_header(token: &Option<String>) -> Option<String> {
     token.as_ref().map(|t| format!("Bearer {}", t))
 }
 
+/// Task within a project (for /api/tasks/timer response)
+#[derive(Debug, Deserialize)]
+pub struct ApiTaskInProject {
+    pub id: i64,
+    pub name: String,
+    pub max_hours: Option<f64>,
+    pub total_tracked_seconds: Option<i64>,
+    pub remaining_seconds: Option<i64>,
+}
+
+/// Project with tasks (for /api/tasks/timer response)
+#[derive(Debug, Deserialize)]
+pub struct ApiProjectWithTasks {
+    pub id: i64,
+    pub name: String,
+    pub color: Option<String>,
+    pub tasks: Vec<ApiTaskInProject>,
+}
+
+/// Project details (for /api/me/projects response)
+#[derive(Debug, Deserialize)]
+pub struct ApiProject {
+    pub id: i64,
+    pub name: String,
+    pub color: Option<String>,
+    pub task_count: Option<i64>,
+}
+
+/// Task with assignees (for /api/projects/{id}/tasks response)
 #[derive(Debug, Deserialize)]
 pub struct ApiTask {
     pub id: i64,
@@ -59,14 +88,8 @@ pub struct ApiTask {
     pub max_hours: Option<f64>,
     pub project_id: Option<i64>,
     pub project_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ApiProject {
-    pub id: i64,
-    pub name: String,
-    pub color: Option<String>,
-    pub task_count: Option<i64>,
+    pub total_tracked_seconds: Option<i64>,
+    pub remaining_seconds: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,7 +137,7 @@ pub fn get_me(token: &str) -> Result<crate::models::AuthUser, String> {
     resp.into_json().map_err(|e| format!("Parse error: {}", e))
 }
 
-/// Fetches tasks for timer, merges with summary (elapsed) and status (running).
+/// Fetches tasks for timer (grouped by project), flattens to task list.
 ///
 /// Returns an empty list if no token is provided (not logged in).
 pub fn list_tasks(token: &Option<String>) -> Result<Vec<Task>, String> {
@@ -130,37 +153,26 @@ pub fn list_tasks(token: &Option<String>) -> Result<Vec<Task>, String> {
         .call()
         .map_err(|e| format!("API error: {}", e))?;
 
-    let api_tasks: Vec<ApiTask> = resp
+    // Parse response as projects with tasks (new format)
+    let api_projects: Vec<ApiProjectWithTasks> = resp
         .into_json()
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    // Get elapsed times from summary report
-    let summary = get_summary(token).unwrap_or_else(|_| SummaryReport {
-        tasks: vec![],
-        total_seconds: 0,
-    });
-
-    let summary_map: std::collections::HashMap<i64, i64> = summary
-        .tasks
-        .iter()
-        .map(|st| (st.task_id, st.total_seconds))
-        .collect();
-
-    let tasks = api_tasks
-        .into_iter()
-        .map(|t| {
-            let summary_elapsed = summary_map.get(&t.id).copied().unwrap_or(0);
-            Task {
+    // Flatten projects into task list
+    let mut tasks = Vec::new();
+    for project in api_projects {
+        for t in project.tasks {
+            tasks.push(Task {
                 id: t.id,
                 name: t.name,
                 budget_secs: (t.max_hours.unwrap_or(8.0) * 3600.0) as i64,
-                elapsed_secs: summary_elapsed,
+                elapsed_secs: t.total_tracked_seconds.unwrap_or(0),
                 running: false,
-                project_id: t.project_id,
-                project_name: t.project_name,
-            }
-        })
-        .collect();
+                project_id: Some(project.id),
+                project_name: Some(project.name.clone()),
+            });
+        }
+    }
 
     Ok(tasks)
 }
@@ -197,7 +209,7 @@ pub fn list_projects(token: &Option<String>) -> Result<Vec<Project>, String> {
     Ok(projects)
 }
 
-/// Fetches tasks for a specific project.
+/// Fetches tasks for a specific project (only in_progress tasks for timer).
 ///
 /// Returns an empty list if no token is provided (not logged in).
 pub fn list_project_tasks(project_id: i64, token: &Option<String>) -> Result<Vec<Task>, String> {
@@ -207,40 +219,29 @@ pub fn list_project_tasks(project_id: i64, token: &Option<String>) -> Result<Vec
     };
 
     let header = format!("Bearer {}", token);
-    let resp = ureq::get(&format!("{}/api/projects/{}/tasks", BASE_URL, project_id))
-        .set("Authorization", &header)
-        .call()
-        .map_err(|e| format!("API error: {}", e))?;
+    // Only fetch in_progress tasks for the timer (exclude done/todo/review)
+    let resp = ureq::get(&format!(
+        "{}/api/projects/{}/tasks?status=in_progress",
+        BASE_URL, project_id
+    ))
+    .set("Authorization", &header)
+    .call()
+    .map_err(|e| format!("API error: {}", e))?;
 
     let api_tasks: Vec<ApiTask> = resp
         .into_json()
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    // Get elapsed times from daily summary
-    let summary = get_summary(token).unwrap_or_else(|_| SummaryReport {
-        tasks: vec![],
-        total_seconds: 0,
-    });
-
-    let summary_map: std::collections::HashMap<i64, i64> = summary
-        .tasks
-        .iter()
-        .map(|st| (st.task_id, st.total_seconds))
-        .collect();
-
     let tasks = api_tasks
         .into_iter()
-        .map(|t| {
-            let summary_elapsed = summary_map.get(&t.id).copied().unwrap_or(0);
-            Task {
-                id: t.id,
-                name: t.name,
-                budget_secs: (t.max_hours.unwrap_or(8.0) * 3600.0) as i64,
-                elapsed_secs: summary_elapsed,
-                running: false,
-                project_id: t.project_id,
-                project_name: t.project_name,
-            }
+        .map(|t| Task {
+            id: t.id,
+            name: t.name,
+            budget_secs: (t.max_hours.unwrap_or(8.0) * 3600.0) as i64,
+            elapsed_secs: t.total_tracked_seconds.unwrap_or(0),
+            running: false,
+            project_id: t.project_id,
+            project_name: t.project_name,
         })
         .collect();
 
@@ -292,7 +293,8 @@ pub fn sync_time(
         "client_started_at": client_started_at,
         "client_stopped_at": client_stopped_at
     });
-    let resp = req.send_json(body)
+    let resp = req
+        .send_json(body)
         .map_err(|e| format!("API error: {}", e))?;
 
     // Parse response for handshake confirmation
@@ -325,6 +327,8 @@ pub fn get_status(token: &Option<String>) -> Result<ApiStatus, String> {
     resp.into_json().map_err(|e| format!("Parse error: {}", e))
 }
 
+/// Fetches daily summary report for elapsed time display.
+#[allow(dead_code)]
 fn get_summary(token: &str) -> Result<SummaryReport, String> {
     let header = format!("Bearer {}", token);
     // Use daily report (today's date) instead of all-time summary

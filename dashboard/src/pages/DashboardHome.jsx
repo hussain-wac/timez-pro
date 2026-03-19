@@ -50,8 +50,8 @@ export default function DashboardHome() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
-        <p className="text-gray-500 mt-1">Real-time employee tracking and statistics</p>
+        <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
+        <p className="text-gray-600 mt-1 text-sm">Real-time employee tracking and statistics</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -86,9 +86,9 @@ export default function DashboardHome() {
       </div>
 
       {projects.length > 0 && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+        <div className="bg-white rounded-md border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-base font-medium text-gray-900 flex items-center gap-2">
               <FolderKanban className="w-5 h-5 text-blue-600" />
               Recent Projects
             </h2>
@@ -108,51 +108,51 @@ export default function DashboardHome() {
         </div>
       )}
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="p-6 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-800">Employee Status</h2>
+      <div className="bg-white rounded-md border border-gray-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200">
+          <h2 className="text-base font-medium text-gray-900">Employee Status</h2>
         </div>
-        
+
         {users.length === 0 ? (
-          <div className="p-12 text-center text-gray-500">
+          <div className="p-12 text-center text-gray-600 text-sm">
             No employees found
           </div>
         ) : (
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-gray-200">
             {users.map(user => (
-              <div key={user.user_id} className="p-4 flex items-center justify-between hover:bg-gray-50 transition-colors">
+              <div key={user.user_id} className="px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors">
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center overflow-hidden">
+                  <div className="w-10 h-10 rounded-md bg-blue-500 flex items-center justify-center overflow-hidden flex-shrink-0">
                     {user.user_picture ? (
                       <img src={user.user_picture} alt={user.user_name} className="w-full h-full object-cover" />
                     ) : (
-                      <span className="text-white font-medium">
+                      <span className="text-white text-sm font-semibold">
                         {user.user_name?.charAt(0).toUpperCase() || '?'}
                       </span>
                     )}
                   </div>
                   <div>
-                    <p className="font-medium text-gray-800">{user.user_name}</p>
+                    <p className="font-medium text-gray-900 text-sm">{user.user_name}</p>
                     {user.running ? (
-                      <p className="text-sm text-green-600">Working: {user.task_name}</p>
+                      <p className="text-xs text-green-600">Working: {user.task_name}</p>
                     ) : (
-                      <p className="text-sm text-gray-400">Idle</p>
+                      <p className="text-xs text-gray-500">Idle</p>
                     )}
                   </div>
                 </div>
                 <div className="text-right">
                   {user.running ? (
                     <>
-                      <span className="inline-flex items-center gap-1.5 text-sm text-green-600 font-medium">
+                      <span className="inline-flex items-center gap-1.5 text-xs text-green-600 font-medium">
                         <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
                         Working
                       </span>
-                      <p className="text-lg font-mono text-gray-800 mt-1">
+                      <p className="text-base font-mono text-gray-900 mt-1">
                         {formatDuration(user.elapsed_seconds)}
                       </p>
                     </>
                   ) : (
-                    <span className="text-sm text-gray-400">Offline</span>
+                    <span className="text-xs text-gray-500">Offline</span>
                   )}
                 </div>
               </div>

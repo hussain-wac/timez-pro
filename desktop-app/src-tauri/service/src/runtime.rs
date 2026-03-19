@@ -36,7 +36,11 @@ pub fn parse_parent_pid() -> Option<u32> {
 }
 
 #[cfg(unix)]
-pub fn run_server<F>(socket_path: PathBuf, parent_pid: Option<u32>, handler: F) -> Result<(), String>
+pub fn run_server<F>(
+    socket_path: PathBuf,
+    parent_pid: Option<u32>,
+    handler: F,
+) -> Result<(), String>
 where
     F: Fn(Request) -> Result<ResponseData, String> + Send + Sync + 'static,
 {
@@ -121,43 +125,48 @@ where
 }
 
 #[cfg(unix)]
-pub fn send_request(
-    socket_path: &Path,
-    request: Request,
-) -> Result<ResponseData, String> {
+pub fn send_request(socket_path: &Path, request: Request) -> Result<ResponseData, String> {
     let mut stream = UnixStream::connect(socket_path).map_err(|e| e.to_string())?;
     send_request_on_stream(&mut stream, request)
 }
 
 #[cfg(windows)]
-pub fn send_request(
-    port: u16,
-    request: Request,
-) -> Result<ResponseData, String> {
+pub fn send_request(port: u16, request: Request) -> Result<ResponseData, String> {
     let addr = format!("127.0.0.1:{}", port);
     let mut stream = TcpStream::connect(&addr).map_err(|e| e.to_string())?;
     send_request_on_stream(&mut stream, request)
 }
 
-fn send_request_on_stream(stream: &mut (impl Write + Read), request: Request) -> Result<ResponseData, String> {
+fn send_request_on_stream(
+    stream: &mut (impl Write + Read),
+    request: Request,
+) -> Result<ResponseData, String> {
     let envelope = RequestEnvelope {
         token: REQUEST_TOKEN.to_string(),
         request,
     };
     let payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
-    stream.write_all(payload.as_bytes()).map_err(|e: std::io::Error| e.to_string())?;
-    stream.write_all(b"\n").map_err(|e: std::io::Error| e.to_string())?;
+    stream
+        .write_all(payload.as_bytes())
+        .map_err(|e: std::io::Error| e.to_string())?;
+    stream
+        .write_all(b"\n")
+        .map_err(|e: std::io::Error| e.to_string())?;
     stream.flush().map_err(|e: std::io::Error| e.to_string())?;
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line).map_err(|e: std::io::Error| e.to_string())?;
+    reader
+        .read_line(&mut line)
+        .map_err(|e: std::io::Error| e.to_string())?;
 
     let response: ResponseEnvelope =
         serde_json::from_str(&line).map_err(|e| format!("Invalid response: {e}"))?;
 
     if !response.ok {
-        return Err(response.error.unwrap_or_else(|| "Unknown service error".to_string()));
+        return Err(response
+            .error
+            .unwrap_or_else(|| "Unknown service error".to_string()));
     }
 
     response
@@ -224,13 +233,21 @@ where
 
 fn write_response(stream: &mut IpcStream, response: ResponseEnvelope) -> Result<(), String> {
     let payload = serde_json::to_string(&response).map_err(|e| e.to_string())?;
-    stream.write_all(payload.as_bytes()).map_err(|e: std::io::Error| e.to_string())?;
-    stream.write_all(b"\n").map_err(|e: std::io::Error| e.to_string())?;
+    stream
+        .write_all(payload.as_bytes())
+        .map_err(|e: std::io::Error| e.to_string())?;
+    stream
+        .write_all(b"\n")
+        .map_err(|e: std::io::Error| e.to_string())?;
     stream.flush().map_err(|e: std::io::Error| e.to_string())
 }
 
 #[cfg(unix)]
-fn spawn_parent_watchdog(parent_pid: Option<u32>, socket_path: Option<PathBuf>, _port: Option<u16>) {
+fn spawn_parent_watchdog(
+    parent_pid: Option<u32>,
+    socket_path: Option<PathBuf>,
+    _port: Option<u16>,
+) {
     let Some(parent_pid) = parent_pid else {
         return;
     };
@@ -247,7 +264,11 @@ fn spawn_parent_watchdog(parent_pid: Option<u32>, socket_path: Option<PathBuf>, 
 }
 
 #[cfg(windows)]
-fn spawn_parent_watchdog(parent_pid: Option<u32>, _socket_path: Option<PathBuf>, _port: Option<u16>) {
+fn spawn_parent_watchdog(
+    parent_pid: Option<u32>,
+    _socket_path: Option<PathBuf>,
+    _port: Option<u16>,
+) {
     let Some(parent_pid) = parent_pid else {
         return;
     };
@@ -259,7 +280,11 @@ fn spawn_parent_watchdog(parent_pid: Option<u32>, _socket_path: Option<PathBuf>,
 
         #[link(name = "kernel32")]
         extern "system" {
-            fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut std::ffi::c_void;
+            fn OpenProcess(
+                dwDesiredAccess: u32,
+                bInheritHandle: i32,
+                dwProcessId: u32,
+            ) -> *mut std::ffi::c_void;
             fn WaitForSingleObject(hHandle: *mut std::ffi::c_void, dwMilliseconds: u32) -> u32;
             fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
         }

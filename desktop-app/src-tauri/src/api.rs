@@ -25,6 +25,25 @@ fn auth_header(token: &Option<String>) -> Option<String> {
     token.as_ref().map(|t| format!("Bearer {}", t))
 }
 
+/// Task within a project (for /api/tasks/timer response)
+#[derive(Debug, Deserialize)]
+pub struct ApiTaskInProject {
+    pub id: i64,
+    pub name: String,
+    pub max_hours: Option<f64>,
+    pub total_tracked_seconds: Option<i64>,
+    pub remaining_seconds: Option<i64>,
+}
+
+/// Project with tasks (for /api/tasks/timer response)
+#[derive(Debug, Deserialize)]
+pub struct ApiProjectWithTasks {
+    pub id: i64,
+    pub name: String,
+    pub color: Option<String>,
+    pub tasks: Vec<ApiTaskInProject>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ApiTask {
     pub id: i64,
@@ -80,7 +99,7 @@ pub fn get_me(token: &str) -> Result<crate::models::AuthUser, String> {
     resp.into_json().map_err(|e| format!("Parse error: {}", e))
 }
 
-/// Fetches tasks for timer (only in_progress status), merges with summary (elapsed) and status (running).
+/// Fetches tasks for timer (grouped by project), flattens to task list.
 pub fn list_tasks(token: &Option<String>) -> Result<Vec<Task>, String> {
     // Return empty list if no token (not logged in)
     let token = match token {
@@ -88,28 +107,33 @@ pub fn list_tasks(token: &Option<String>) -> Result<Vec<Task>, String> {
         None => return Ok(vec![]),
     };
 
-    let token_ref: &Option<String> = &Some(token.clone());
-    let header = auth_header(token_ref);
-    let mut req = ureq::get(&format!("{}/api/tasks/timer", BASE_URL));
-    if let Some(h) = header {
-        req = req.set("Authorization", &h);
-    }
-    let resp = req.call().map_err(|e| format!("API error: {}", e))?;
-    let api_tasks: Vec<ApiTask> = resp
+    let header = format!("Bearer {}", token);
+    let resp = ureq::get(&format!("{}/api/tasks/timer", BASE_URL))
+        .set("Authorization", &header)
+        .call()
+        .map_err(|e| format!("API error: {}", e))?;
+
+    // Parse response as projects with tasks (new format)
+    let api_projects: Vec<ApiProjectWithTasks> = resp
         .into_json()
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    println!("[api] /api/tasks/timer response: {:?}", api_tasks);
+    println!("[api] /api/tasks/timer response: {:?}", api_projects);
 
-    let mut tasks = Vec::with_capacity(api_tasks.len());
-    for t in api_tasks {
-        tasks.push(Task {
-            id: t.id,
-            name: t.name,
-            budget_secs: ((t.max_hours.unwrap_or(8.0)) * 3600.0) as i64,
-            elapsed_secs: t.total_tracked_seconds.unwrap_or(0),
-            running: false,
-        });
+    // Flatten projects into task list
+    let mut tasks = Vec::new();
+    for project in api_projects {
+        for t in project.tasks {
+            tasks.push(Task {
+                id: t.id,
+                name: t.name,
+                budget_secs: (t.max_hours.unwrap_or(8.0) * 3600.0) as i64,
+                elapsed_secs: t.total_tracked_seconds.unwrap_or(0),
+                running: false,
+                project_id: Some(project.id),
+                project_name: Some(project.name.clone()),
+            });
+        }
     }
 
     Ok(tasks)

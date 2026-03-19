@@ -1,8 +1,8 @@
 pub mod api;
 pub mod idle;
 pub mod models;
-pub mod timer_state;
 pub mod protocol;
+pub mod timer_state;
 
 /// Common constants used across the application.
 /// Centralizing these prevents magic numbers and ensures consistency.

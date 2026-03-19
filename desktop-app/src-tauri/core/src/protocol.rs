@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::models::{ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Project, Task, TimerStatus};
+use crate::models::{
+    ActivityStats, AuthResponse, AuthUser, IdleEvent, MidnightResetEvent, Project, Task,
+    TimerStatus,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RequestEnvelope {
@@ -11,16 +14,30 @@ pub struct RequestEnvelope {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
     ListTasks,
-    StartTimer { task_id: i64 },
+    StartTimer {
+        task_id: i64,
+    },
     StopTimer,
     GetStatus,
-    AddIdleTime { task_id: i64, duration_secs: i64 },
-    DiscardIdleTime { task_id: i64 },
+    AddIdleTime {
+        task_id: i64,
+        duration_secs: i64,
+    },
+    DiscardIdleTime {
+        task_id: i64,
+    },
     RefreshTasks,
     GetActivityStats,
-    GoogleLogin { google_id_token: String },
-    StartGoogleAuth { client_id: String, client_secret: String },
-    ValidateToken { token: String },
+    GoogleLogin {
+        google_id_token: String,
+    },
+    StartGoogleAuth {
+        client_id: String,
+        client_secret: String,
+    },
+    ValidateToken {
+        token: String,
+    },
     Logout,
     GetIdleEvent,
     ResolveIdleEvent,
@@ -29,9 +46,13 @@ pub enum Request {
     /// List all projects the user is allocated to
     ListProjects,
     /// List tasks for a specific project
-    ListProjectTasks { project_id: i64 },
+    ListProjectTasks {
+        project_id: i64,
+    },
     /// Set the currently active project for filtering
-    SetActiveProject { project_id: Option<i64> },
+    SetActiveProject {
+        project_id: Option<i64>,
+    },
     Shutdown,
 }
 
